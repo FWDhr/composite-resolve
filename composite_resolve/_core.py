@@ -13,6 +13,8 @@ All composite_resolve modules import from here.
 
 import math
 
+from composite_resolve._errors import CompositionError
+
 # =============================================================================
 # EXCEPTIONS
 # =============================================================================
@@ -228,6 +230,27 @@ class Composite:
             return exp(n * ln(self))
         raise TypeError(f"Power exponent must be int, float, or Composite, got {type(n)}")
 
+    def __rpow__(self, base):
+        """base ** self  —  plain float/int base with composite exponent.
+
+        Uses  base**x = exp(x * log(base))  for base > 0.
+        """
+        if isinstance(base, (int, float)):
+            import math as _m
+            if base == 1:
+                # 1 ** anything = 1. Short-circuit to avoid exp(x * 0) which
+                # collapses to the empty composite and loses the value.
+                return Composite({0: 1.0})
+            if base > 0:
+                return exp(self * _m.log(base))
+            if base == 0:
+                st = self.st()
+                if st > 0:
+                    return Composite({})
+                raise ValueError("0 ** composite with non-positive exponent is indeterminate")
+            raise ValueError(f"Cannot compute {base}**composite for negative base")
+        return NotImplemented
+
     def __abs__(self):
         if not self._d:
             return Composite({})
@@ -246,10 +269,11 @@ class Composite:
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """NumPy ufunc dispatch. Makes np.sin(composite) just work."""
+        from composite_resolve._errors import UnsupportedFunctionError
         try:
             import numpy as np
         except ImportError:
-            raise NotImplementedError(f"Composite does not support {ufunc}")
+            raise UnsupportedFunctionError(f"numpy.{ufunc.__name__}")
 
         _dispatch = {
             np.sin: sin, np.cos: cos, np.tan: tan,
@@ -276,7 +300,7 @@ class Composite:
         if ufunc == np.power:
             return inputs[0] ** inputs[1]
 
-        raise NotImplementedError(f"Composite does not support {ufunc}")
+        raise UnsupportedFunctionError(f"numpy.{ufunc.__name__}")
 
 
 def _deconvolve(a, b):
@@ -437,6 +461,26 @@ def exp(x, terms=15):
     h = Composite({d: c for d, c in x._d.items() if d != 0 and abs(c) > 1e-15})
     if not h._d:
         return Composite({0: math.exp(a)})
+
+    # Asymptotic handling when the argument has unbounded (positive-dim)
+    # components. The Taylor expansion of exp around x=∞ diverges — it's the
+    # wrong tool for an unbounded input. The correct behavior:
+    #   exp(value that grows to +∞) → +∞
+    #   exp(value that falls to −∞) → 0
+    # Whether the dominant unbounded term is 1st-order infinity or higher
+    # doesn't matter for limit purposes — both mean "diverges in that sign".
+    pos_dims = {d: c for d, c in h._d.items() if d > 0}
+    if pos_dims:
+        leading_coeff = pos_dims[max(pos_dims)]
+        if leading_coeff > 0:
+            # exp dominates every polynomial: place it at a dimension higher
+            # than any finite-order polynomial will reach. `terms` is the
+            # Taylor truncation bound, which effectively sets the ceiling of
+            # polynomial dims the user's code can produce.
+            return Composite({terms: math.exp(a)})   # → +∞ (exp-dominant)
+        return Composite({})                          # → 0
+
+    # Only infinitesimal components: Taylor series converges, use it.
     base = math.exp(a)
     exp_h = Composite({0: 1.0})
     h_power = Composite({0: 1.0})
@@ -461,28 +505,15 @@ def ln(x, terms=15):
     top_dim = dims_sorted[0]
     top_coeff = coeffs[top_dim]
 
-    # Positive dims: factor out dominant term
-    if top_dim > 0 and top_coeff > 0:
-        dominant = Composite({top_dim: top_coeff})
-        if len(coeffs) == 1:
-            return R(math.log(top_coeff))
-        ratio_comp = (x - dominant) / dominant
-        one_plus = Composite({0: 1.0}) + ratio_comp
-        a_inner = one_plus.st()
-        if a_inner <= 0:
-            return R(math.log(top_coeff))
-        ln_base = math.log(top_coeff)
-        h_part = one_plus - R(a_inner)
-        ratio = h_part / R(a_inner)
-        result = Composite({0: math.log(a_inner) + ln_base})
-        power = Composite({0: 1.0})
-        for n in range(1, terms):
-            power = power * ratio
-            sign = (-1) ** (n + 1)
-            result = result + sign * power / n
-        return result
+    # Structurally unbounded (input → ±∞) or infinitesimal (input → 0).
+    # Integer dimensions can't faithfully represent ln's sub-polynomial
+    # growth rate, so rather than pick a wrong answer or a numerical-fallback
+    # patch, refuse explicitly.
+    if top_dim > 0:
+        raise CompositionError(
+            "ln is not composable with structurally unbounded composite input")
 
-    # Standard: st > 0
+    # Standard: finite positive standard part → Taylor expansion around st.
     a = x.st()
     if a > 0:
         h_part = x - R(a)
@@ -495,13 +526,9 @@ def ln(x, terms=15):
             result = result + sign * power / n
         return result
 
-    # Infinitesimal: evaluate at coefficient
-    neg_dims = {d: c for d, c in coeffs.items() if d < 0}
-    if neg_dims:
-        min_dim = min(neg_dims.keys())
-        coeff = neg_dims[min_dim]
-        if coeff > 0:
-            return R(math.log(coeff))
+    if a == 0:
+        raise CompositionError(
+            "ln is not composable with infinitesimal composite input")
 
     raise ValueError("ln requires positive input")
 
@@ -523,7 +550,8 @@ def sqrt(x, terms=12):
 
     if top_dim > 0 and top_coeff > 0:
         if top_dim % 2 != 0:
-            return Composite({top_dim: math.sqrt(top_coeff)})
+            raise CompositionError(
+                "sqrt is not composable with odd-dim infinite composite input")
         result_dim = top_dim // 2
         sqrt_top = math.sqrt(top_coeff)
         if len(coeffs) == 1:
@@ -543,8 +571,8 @@ def sqrt(x, terms=12):
     # Negative dims (infinitesimal) — same rule: halve the dimension
     if top_coeff > 0:
         if top_dim % 2 != 0:
-            # Odd negative dim: can't halve cleanly (fractional dim)
-            return Composite({top_dim: math.sqrt(top_coeff)})
+            raise CompositionError(
+                "sqrt is not composable with odd-dim infinitesimal composite input")
         result_dim = top_dim // 2  # -2 → -1, -4 → -2
         sqrt_top = math.sqrt(top_coeff)
         if len(coeffs) == 1:

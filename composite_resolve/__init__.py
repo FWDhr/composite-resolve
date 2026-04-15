@@ -30,6 +30,7 @@ from composite_resolve._errors import (
     LimitDivergesError,
     SingularityError,
     CompositionError,
+    UnsupportedFunctionError,
 )
 from composite_resolve._classify import Regular, Removable, Pole, Essential
 
@@ -39,5 +40,6 @@ __all__ = [
     "taylor", "classify", "residue",
     "CompositeResolveError", "LimitDoesNotExistError",
     "LimitDivergesError", "SingularityError", "CompositionError",
+    "UnsupportedFunctionError",
     "Regular", "Removable", "Pole", "Essential",
 ]

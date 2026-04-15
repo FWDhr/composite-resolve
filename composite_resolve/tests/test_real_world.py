@@ -246,13 +246,10 @@ class TestDivergent:
             limit(lambda x: exp(x), to=math.inf)
 
     def test_log_at_zero_diverges(self):
-        """log(x) at 0+ diverges to -inf.
-        Known limitation: ln(ZERO) returns ZERO via coefficient evaluation,
-        so limit returns 0.0 instead of raising. Needs fractional dimensions."""
-        result = limit(lambda x: log(x), to=0, dir="+")
-        # Currently returns 0.0 (known limitation). When fractional dims
-        # are implemented, this should raise LimitDivergesError(-inf).
-        assert result == 0.0  # document current behavior
+        """log(x) at 0+ diverges to -inf."""
+        with pytest.raises(LimitDivergesError) as exc_info:
+            limit(lambda x: log(x), to=0, dir="+")
+        assert exc_info.value.value == -math.inf
 
     def test_tan_near_pi_over_2(self):
         """tan(x) diverges near pi/2. Use a point we can represent exactly."""
