@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "composite-resolve"
+version = "0.1.0"
+description = "Exact limit computation for Python functions. Resolve singularities algebraically."
+readme = "README.md"
+license = {text = "AGPL-3.0-or-later"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Toni Milovan", email = "tmilovan@fwd.hr"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+keywords = ["limits", "calculus", "singularity", "mathematics", "resolve", "NaN"]
+
+[project.urls]
+Homepage = "https://github.com/csmaxwell/composite-resolve"
+Documentation = "https://github.com/csmaxwell/composite-resolve#readme"
+Issues = "https://github.com/csmaxwell/composite-resolve/issues"
+
+[tool.setuptools.packages.find]
+include = ["composite_resolve*"]
