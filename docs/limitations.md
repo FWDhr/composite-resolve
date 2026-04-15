@@ -70,6 +70,32 @@ Functions with infinitely dense poles near the limit point may not be detected a
 limit(lambda x: x/sin(1/x), to=0)  # May return 0.0 instead of raising
 ```
 
+### `from math import *` breaks resolution
+
+`from math import sin` captures `math.sin` as a local name. When `resolve()` patches the `math` module during evaluation, the captured name still points to the original — the patch doesn't reach it.
+
+```python
+from math import sin    # captures original math.sin
+
+@safe
+def sinc(x):
+    return sin(x) / x   # uses the captured math.sin, not the patched one
+
+sinc(0)  # → 0.9999999999999983 (approximate, not exact)
+```
+
+**Fix:** use `import math` (module lookup, patchable) or `from composite_resolve.math import sin` (already composite-aware):
+
+```python
+import math
+
+@safe
+def sinc(x):
+    return math.sin(x) / x  # module lookup — patching works
+
+sinc(0)  # → 1.0 (exact)
+```
+
 ### Unsupported math libraries
 
 Only `math` and `numpy` transcendentals are intercepted. Functions using `jax.numpy`, `torch`, `scipy.special`, or other libraries will raise `CompositionError`.

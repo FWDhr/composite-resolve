@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "composite-resolve"
-version = "0.1.0"
+version = "0.1.1"
 description = "Exact limit computation for Python functions. Resolve singularities algebraically."
 readme = "README.md"
 license = {text = "AGPL-3.0-or-later"}
@@ -31,9 +31,9 @@ classifiers = [
 keywords = ["limits", "calculus", "singularity", "mathematics", "resolve", "NaN"]
 
 [project.urls]
-Homepage = "https://github.com/csmaxwell/composite-resolve"
-Documentation = "https://github.com/csmaxwell/composite-resolve#readme"
-Issues = "https://github.com/csmaxwell/composite-resolve/issues"
+Homepage = "https://github.com/FWDhr/composite-resolve"
+Documentation = "https://github.com/FWDhr/composite-resolve/blob/main/README.md"
+Issues = "https://github.com/FWDhr/composite-resolve/issues"
 
 [tool.setuptools.packages.find]
 include = ["composite_resolve*"]

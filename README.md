@@ -168,9 +168,12 @@ g(0)  # → 1.0
 
 `math` functions are patched during resolution. `numpy` functions dispatch via `__array_ufunc__`.
 
+**Important:** use `import math` not `from math import sin`. The `from` form captures the original function at import time — patching the module later doesn't reach it. See [limitations](docs/limitations.md) for details.
+
 ## Limitations
 
 - Single-variable functions only
+- Use `import math` not `from math import sin` — the `from` form captures the original function, patching can't reach it
 - Functions must use `math` or `numpy` transcendentals (not `jax`, `torch`, etc.)
 - Not thread-safe during `limit()`/`resolve()`/`@safe` calls
 - Float-precision evaluation points (e.g., `math.pi/2` is not exactly pi/2)
