@@ -4,7 +4,7 @@ Evaluate Python functions at points where they're undefined.
 
 The library where you pass a plain numeric Python function and get exact limits via algebraic infinitesimal arithmetic, with provenance tracking. To my knowledge, this is the first library that does this directly on plain Python functions.
 
-Eliminates edge-case handling and numerical instability at singularities — just write the function and evaluate it everywhere.
+Eliminates edge-case handling and numerical instability at singularities, just write the function and evaluate it everywhere.
 
 ```python
 import math
@@ -174,6 +174,8 @@ g(0)  # → 1.0
 - Functions must use `math` or `numpy` transcendentals (not `jax`, `torch`, etc.)
 - Not thread-safe during `limit()`/`resolve()`/`@safe` calls
 - Float-precision evaluation points (e.g., `math.pi/2` is not exactly pi/2)
+
+Some edge cases might still not be covered. Needs community scrutiny on evaluting the results.
 
 ## License
 
