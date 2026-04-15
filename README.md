@@ -95,8 +95,6 @@ The library evaluates functions using composite arithmetic. Instead of symbolic 
 
 The function is treated as a black box. No expression tree, no symbolic manipulation.
 
-The function is treated as a black box. No expression tree, no symbolic manipulation.
-
 ## API
 
 ### `safe(f) -> wrapped function`
