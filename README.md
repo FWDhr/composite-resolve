@@ -2,6 +2,10 @@
 
 Evaluate Python functions at points where they're undefined.
 
+The library where you pass a plain numeric Python function and get exact limits via algebraic infinitesimal arithmetic, with provenance tracking. To my knowledge, this is the first library that does this directly on plain Python functions.
+
+Eliminates edge-case handling and numerical instability at singularities — just write the function and evaluate it everywhere.
+
 ```python
 import math
 from composite_resolve import safe
@@ -87,7 +91,9 @@ taylor(lambda x: math.exp(x), at=0, order=4)
 
 ## How It Works
 
-The library evaluates functions using composite arithmetic — a number system where each value carries its derivative tower. Evaluating a function at a composite infinitesimal produces the value, all derivatives, and enough structure to resolve algebraic singularities.
+The library evaluates functions using composite arithmetic. Instead of symbolic manipulation, the library substitutes a concrete algebraic infinitesimal into your function. The result carries enough structure to resolve 0/0, 0×∞, and all other indeterminate forms through ordinary arithmetic.
+
+The function is treated as a black box. No expression tree, no symbolic manipulation.
 
 The function is treated as a black box. No expression tree, no symbolic manipulation.
 
