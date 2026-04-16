@@ -395,6 +395,8 @@ class Composite:
             np.arctan: atan, np.arcsin: asin, np.arccos: acos,
             np.sinh: sinh, np.cosh: cosh, np.tanh: tanh,
             np.abs: abs, np.absolute: abs,
+            np.expm1: expm1, np.log1p: log1p,
+            np.floor: floor, np.ceil: ceiling,
         }
 
         if ufunc in _dispatch:
@@ -511,10 +513,36 @@ def _bounded_at_inf(func, x):
 # TRANSCENDENTAL FUNCTIONS
 # =============================================================================
 
+def _sincos_h_series(h, terms):
+    """Build exact rational Taylor series for sin(h) and cos(h) via the
+    derivative recurrence.  Invariant: `math.sin`/`math.cos` are called only
+    at the real base point `a` by callers — never on a composite.  Coefficients
+    here are exact rationals (unit scalars divided by consecutive integers).
+
+    Recurrence (from `sin' = cos`, `cos' = -sin`): each new term = prev · h / n,
+    routed to sin_h on odd n, cos_h on even n, with alternating signs.
+    """
+    sin_h = Composite({})
+    cos_h = Composite({0: 1.0})
+    term = Composite({0: 1.0})
+    for n in range(1, terms):
+        term = (term * h) / n
+        if n % 2 == 1:
+            sign = (-1) ** ((n - 1) // 2)
+        else:
+            sign = (-1) ** (n // 2)
+        signed = term if sign > 0 else -term
+        if n % 2 == 1:
+            sin_h = sin_h + signed
+        else:
+            cos_h = cos_h + signed
+    return sin_h, cos_h
+
+
 def sin(x, terms=12):
     terms = _effective_terms(terms)
     if isinstance(x, (int, float)):
-        return math.sin(x) if isinstance(x, float) and not isinstance(x, bool) else math.sin(float(x))
+        return math.sin(float(x))
     if _is_nothing(x):
         return Composite({})
     if _has_positive_dims(x):
@@ -524,17 +552,8 @@ def sin(x, terms=12):
     if not h._d:
         return R(math.sin(a))
     sin_a, cos_a = math.sin(a), math.cos(a)
-    sin_h = Composite({})
-    cos_h = Composite({0: 1.0})
-    h_power = Composite({0: 1.0})
-    for n in range(1, terms):
-        h_power = h_power * h
-        if n % 2 == 1:
-            sign = (-1) ** ((n - 1) // 2)
-            sin_h = sin_h + (sign / math.factorial(n)) * h_power
-        else:
-            sign = (-1) ** (n // 2)
-            cos_h = cos_h + (sign / math.factorial(n)) * h_power
+    sin_h, cos_h = _sincos_h_series(h, terms)
+    # sin(a + h) = sin(a)·cos(h) + cos(a)·sin(h)
     return sin_a * cos_h + cos_a * sin_h
 
 
@@ -551,17 +570,8 @@ def cos(x, terms=12):
     if not h._d:
         return R(math.cos(a))
     sin_a, cos_a = math.sin(a), math.cos(a)
-    sin_h = Composite({})
-    cos_h = Composite({0: 1.0})
-    h_power = Composite({0: 1.0})
-    for n in range(1, terms):
-        h_power = h_power * h
-        if n % 2 == 1:
-            sign = (-1) ** ((n - 1) // 2)
-            sin_h = sin_h + (sign / math.factorial(n)) * h_power
-        else:
-            sign = (-1) ** (n // 2)
-            cos_h = cos_h + (sign / math.factorial(n)) * h_power
+    sin_h, cos_h = _sincos_h_series(h, terms)
+    # cos(a + h) = cos(a)·cos(h) − sin(a)·sin(h)
     return cos_a * cos_h - sin_a * sin_h
 
 
@@ -594,13 +604,15 @@ def exp(x, terms=15):
             return Composite({terms: math.exp(a)})   # → +∞ (exp-dominant)
         return Composite({})                          # → 0
 
-    # Only infinitesimal components: Taylor series converges, use it.
+    # Only infinitesimal components: Taylor series converges.
+    # Derivative identity `exp' = exp` gives the recurrence  t_n = t_{n-1} · h / n
+    # starting from t_0 = 1.  One composite op per term instead of two.
     base = math.exp(a)
+    term = Composite({0: 1.0})
     exp_h = Composite({0: 1.0})
-    h_power = Composite({0: 1.0})
     for n in range(1, terms):
-        h_power = h_power * h
-        exp_h = exp_h + (1.0 / math.factorial(n)) * h_power
+        term = (term * h) / n
+        exp_h = exp_h + term
     return base * exp_h
 
 
@@ -627,17 +639,21 @@ def ln(x, terms=15):
             return Composite({1: math.inf})      # ln(+∞) = +∞ (lossy)
         raise ValueError("ln requires positive input")   # -∞ → log undef
 
-    # Standard: finite positive standard part → Taylor expansion around st.
+    # Standard: finite positive standard part → Taylor around `a`.
+    # Derivative identity ln' = 1/x gives:
+    #   ln(a + h) = ln(a) + h/a - h²/(2a²) + h³/(3a³) - ...
+    # Recurrence on `(h/a)` powers: term_k = term_{k-1} · (h/a).
+    # `math.log(a)` is the single float rounding at dim 0; all correction
+    # coefficients 1, -1/2, 1/3, -1/4, ... are exact rationals.
     a = x.st()
     if a > 0:
-        h_part = x - R(a)
-        ratio = h_part / R(a)
+        ratio = (x - R(a)) / R(a)                     # h / a
         result = Composite({0: math.log(a)})
-        power = Composite({0: 1.0})
+        term = Composite({0: 1.0})
         for n in range(1, terms):
-            power = power * ratio
-            sign = (-1) ** (n + 1)
-            result = result + sign * power / n
+            term = term * ratio                        # (h/a)^n
+            sign = 1 if n % 2 == 1 else -1             # alternating, + at n=1
+            result = result + (sign / n) * term
         return result
 
     # a == 0 with top_dim ≤ 0: input → 0⁺ (if leading infinitesimal positive).
@@ -651,6 +667,525 @@ def ln(x, terms=15):
         raise ValueError("ln requires positive input")
 
     raise ValueError("ln requires positive input")
+
+
+def expm1(x, terms=15):
+    """exp(x) − 1, numerically stable for small x.
+
+    Decomposes as `expm1(a+h) = expm1(a) + exp(a)·(exp(h) − 1)`. The leading
+    `1` in the Taylor series never materializes: the series for `exp(h)−1`
+    starts at `h` itself (dim −1 for an infinitesimal probe), skipping the
+    dim-0 cancellation entirely. For plain floats, delegates to `math.expm1`.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        return math.expm1(float(x))
+    if _is_nothing(x):
+        return Composite({})
+
+    a = x.st()
+    h = Composite({d: c for d, c in x._d.items() if d != 0 and abs(c) > 1e-15})
+
+    # Asymptotic: input → +∞ → expm1 → +∞ (exp-dominant); input → −∞ → expm1 → −1.
+    pos = {d: c for d, c in h._d.items() if d > 0}
+    if pos:
+        if pos[max(pos)] > 0:
+            return Composite({terms: math.exp(a)})
+        return Composite({0: -1.0})
+
+    if not h._d:
+        return Composite({0: math.expm1(a)})
+
+    # series(h) = h + h²/2 + h³/6 + … — starts at `h` itself, no "1".
+    term = h
+    series = Composite(dict(h._d))
+    for n in range(2, terms):
+        term = (term * h) / n
+        series = series + term
+
+    base_expm1 = math.expm1(a)
+    base_exp = math.exp(a)
+    result = base_exp * series
+    if base_expm1 != 0:
+        result = result + Composite({0: base_expm1})
+    return result
+
+
+def _step_function(x, real_fn, integer_right, integer_left):
+    """Shared machinery for `floor` and `ceil` on composites.
+
+    Both are piecewise-constant real functions. At a non-integer `a = st(x)`
+    they're locally constant; at an integer they jump — the direction of
+    approach decides which side. Composite arithmetic already carries the
+    direction in the sign of the leading negative-dim coefficient.
+    """
+    if isinstance(x, (int, float)):
+        return real_fn(float(x))
+    if _is_nothing(x):
+        return Composite({})
+
+    coeffs = x._d
+    if not coeffs:
+        return Composite({})
+
+    # Positive-dim (structurally infinite) input: floor/ceil of ±∞ → ±∞.
+    pos = {d: c for d, c in coeffs.items() if d > 0 and abs(c) > 1e-15}
+    if pos:
+        leading = pos[max(pos)]
+        return Composite({1: math.inf if leading > 0 else -math.inf})
+
+    a = x.st()
+    # Non-integer standard part: locally constant, no direction needed.
+    if a != int(a):
+        return Composite({0: float(real_fn(a))})
+
+    # At an integer: direction of infinitesimal decides the side.
+    neg = {d: c for d, c in coeffs.items() if d < 0 and abs(c) > 1e-15}
+    if not neg:
+        # Exact integer, no perturbation — floor(k) = ceil(k) = k.
+        return Composite({0: float(a)})
+
+    top_neg = max(neg)
+    if neg[top_neg] > 0:
+        return Composite({0: float(integer_right(a))})
+    return Composite({0: float(integer_left(a))})
+
+
+def floor(x):
+    """Largest integer ≤ x, composite-aware.
+
+    At a non-integer, locally constant. At an integer k, direction matters:
+    `floor(k + 0⁺) = k`, `floor(k − 0⁺) = k − 1`.
+    """
+    return _step_function(x, math.floor,
+                          integer_right=lambda a: int(a),
+                          integer_left=lambda a: int(a) - 1)
+
+
+def ceiling(x):
+    """Smallest integer ≥ x, composite-aware.
+
+    Dual to `floor`: `ceil(k + 0⁺) = k + 1`, `ceil(k − 0⁺) = k`.
+    """
+    return _step_function(x, math.ceil,
+                          integer_right=lambda a: int(a) + 1,
+                          integer_left=lambda a: int(a))
+
+
+def frac(x):
+    """Fractional part: `frac(x) = x − floor(x)`.
+
+    At non-integer x, a smooth "sawtooth" locally. At integer k, jumps
+    from 1 (left limit) to 0 (right limit). Directional handling flows
+    from `floor`'s direction-aware behavior.
+    """
+    if isinstance(x, (int, float)):
+        return float(x) - math.floor(float(x))
+    return x - floor(x)
+
+
+def cbrt(x):
+    """Real cube root, defined for negative inputs (unlike `x**(1/3)`).
+
+    For positive st: defers to `__pow__` with exponent 1/3.
+    For negative st: uses reflection `cbrt(-y) = -cbrt(y)`.
+    For composite ±∞: cube root of coefficient at same dim (if exact).
+    """
+    if isinstance(x, (int, float)):
+        v = float(x)
+        if v >= 0:
+            return v ** (1.0 / 3.0)
+        return -((-v) ** (1.0 / 3.0))
+    if _is_nothing(x):
+        return Composite({})
+    a = x.st()
+    if a >= 0:
+        return x ** (1.0 / 3.0)
+    # Reflect through -1 to stay on the real branch.
+    return Composite({0: -1.0}) * ((Composite({0: -1.0}) * x) ** (1.0 / 3.0))
+
+
+def Mod(x, n):
+    """Mathematical modulo: `Mod(x, n) = x − n·floor(x/n)`.
+
+    Uses the composite-aware `floor`, so directional behavior at boundaries
+    flows through automatically.
+    """
+    if isinstance(x, (int, float)) and isinstance(n, (int, float)):
+        return float(x) - float(n) * math.floor(float(x) / float(n))
+    return x - n * floor(x / n)
+
+
+# ---------------------------------------------------------------------------
+# Error-function family and Fresnel integrals.
+# All are defined by Taylor series with simple coefficient recurrences.
+# Positive-dim inputs (structural ±∞) saturate to the known limits.
+# ---------------------------------------------------------------------------
+
+_TWO_OVER_SQRT_PI = 2.0 / math.sqrt(math.pi)
+
+
+def _erf_like_series(x, sign_pattern, terms, scale=_TWO_OVER_SQRT_PI):
+    """Shared Taylor series for erf / erfi.
+
+    erf(x)  = (2/√π) · Σ  (-1)^n · x^(2n+1) / (n! · (2n+1))
+    erfi(x) = (2/√π) · Σ          x^(2n+1) / (n! · (2n+1))
+
+    `sign_pattern('alt')` toggles the alternating sign; `sign_pattern('plus')`
+    keeps everything positive. Coefficient recurrence:
+        c_n = c_{n-1} · (±1) · (2n-1) / (n · (2n+1))
+    Actually simpler: `term = term · x² / n`, and coefficient = c_{n-1} · ±1 · (2n-1)/(2n+1).
+    """
+    x_sq = x * x
+    term = x                           # c_0 · x^1 = x
+    # first term's coefficient is 1 (so result_0 = scale · x)
+    result = scale * term
+    coeff = 1.0
+    for n in range(1, terms):
+        term = (term * x_sq) / n       # accumulates x^(2n+1), includes 1/n!
+        if sign_pattern == 'alt':
+            coeff = -coeff             # (-1)^n
+        # series factor is 1/(2n+1) per term
+        result = result + (scale * coeff / (2 * n + 1)) * term
+    return result
+
+
+def _saturate(x, plus_val, minus_val):
+    """For a structurally-infinite input, return the saturation value.
+
+    Zero saturations use `ZERO = |1|₋₁` (structural infinitesimal) rather
+    than `|0|₀` — the latter gets pruned to an empty composite which the
+    limit evaluator interprets as "indeterminate" and tries to recover
+    numerically.
+    """
+    pos = {d: c for d, c in x._d.items() if d > 0 and abs(c) > 1e-15}
+    val = plus_val if pos[max(pos)] > 0 else minus_val
+    if val == 0:
+        return Composite({-1: 1.0})                # structural zero
+    return Composite({0: val})
+
+
+def erf(x, terms=15):
+    """Error function: erf(x) = (2/√π) ∫₀ˣ e^(−t²) dt.
+
+    `erf(+∞) = 1`, `erf(−∞) = −1`. Direct Taylor series around 0 — converges
+    everywhere; for finite `x` the convergence is fast when |x| ≲ 3.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        return math.erf(float(x))
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        return _saturate(x, 1.0, -1.0)
+    return _erf_like_series(x, 'alt', terms)
+
+
+def erfc(x, terms=15):
+    """Complementary error function: `erfc(x) = 1 − erf(x)`."""
+    if isinstance(x, (int, float)):
+        return math.erfc(float(x))
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        # erfc(+∞) = 0, erfc(−∞) = 2
+        return _saturate(x, 0.0, 2.0)
+    return Composite({0: 1.0}) - erf(x, terms)
+
+
+def erfi(x, terms=15):
+    """Imaginary error function: erfi(x) = (2/√π) ∫₀ˣ e^(+t²) dt.
+
+    `erfi(+∞) = +∞`, `erfi(−∞) = −∞`. Same series as `erf` but with no sign
+    alternation.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        # No stdlib erfi; compute via series for small |x|, saturate for large.
+        if abs(x) < 1e-300:
+            return 0.0
+        return _erfi_float(float(x), 50)
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        # erfi(+∞) = +∞ (lossy); erfi(−∞) = −∞
+        pos = {d: c for d, c in x._d.items() if d > 0 and abs(c) > 1e-15}
+        return Composite({1: math.inf if pos[max(pos)] > 0 else -math.inf})
+    return _erf_like_series(x, 'plus', terms)
+
+
+def _erfi_float(x, terms):
+    """erfi(x) for plain float, direct Taylor series around 0."""
+    factor = _TWO_OVER_SQRT_PI
+    x_sq = x * x
+    total = x
+    term = x
+    for n in range(1, terms):
+        term = term * x_sq / n
+        total = total + term / (2 * n + 1)
+    return factor * total
+
+
+_HALF_PI = math.pi / 2.0
+
+
+def fresnels(x, terms=15):
+    """Fresnel S: S(x) = ∫₀ˣ sin(π t² / 2) dt.
+
+    Series: `S(x) = Σ (-1)^n · (π/2)^(2n+1) · x^(4n+3) / ((2n+1)! · (4n+3))`.
+    Saturates to ±1/2 at ±∞.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        return _fresnels_float(float(x), 40)
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        return _saturate(x, 0.5, -0.5)
+    # General composite: Taylor around 0. x^(4n+3) built incrementally.
+    x_sq = x * x                       # x²
+    x_cubed = x * x_sq                 # x³ (leading term)
+    term = x_cubed                     # x^(4·0+3)
+    scale = _HALF_PI / 3.0             # (π/2)^1 / ((2·0+1)! · (4·0+3)) = π/6
+    result = scale * term
+    # Recurrence: going from x^(4n+3) to x^(4(n+1)+3) multiplies by x⁴,
+    # and the coefficient multiplies by  (-1)·(π/2)² / ((2n+2)(2n+1)) · (4n+3)/(4n+7)
+    coeff = scale
+    x4 = x_sq * x_sq                   # x⁴
+    for n in range(1, terms):
+        factor = (-(_HALF_PI * _HALF_PI)) / ((2 * n) * (2 * n + 1))
+        factor *= (4 * n - 1) / (4 * n + 3)
+        coeff = coeff * factor
+        term = term * x4
+        result = result + coeff * term
+    return result
+
+
+def fresnelc(x, terms=15):
+    """Fresnel C: C(x) = ∫₀ˣ cos(π t² / 2) dt.
+
+    Series: `C(x) = Σ (-1)^n · (π/2)^(2n) · x^(4n+1) / ((2n)! · (4n+1))`.
+    Saturates to ±1/2 at ±∞.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        return _fresnelc_float(float(x), 40)
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        return _saturate(x, 0.5, -0.5)
+    x_sq = x * x
+    term = x                           # x^(4·0+1) = x
+    coeff = 1.0                        # n=0: (π/2)^0 / (0! · 1) = 1
+    result = coeff * term
+    x4 = x_sq * x_sq
+    for n in range(1, terms):
+        factor = (-(_HALF_PI * _HALF_PI)) / ((2 * n - 1) * (2 * n))
+        factor *= (4 * n - 3) / (4 * n + 1)
+        coeff = coeff * factor
+        term = term * x4
+        result = result + coeff * term
+    return result
+
+
+def _fresnels_float(x, terms):
+    """S(x) for plain float via Taylor series."""
+    if x == 0:
+        return 0.0
+    x_sq = x * x
+    x_cubed = x * x_sq
+    term = x_cubed
+    coeff = _HALF_PI / 3.0
+    total = coeff * term
+    x4 = x_sq * x_sq
+    for n in range(1, terms):
+        factor = (-(_HALF_PI * _HALF_PI)) / ((2 * n) * (2 * n + 1))
+        factor *= (4 * n - 1) / (4 * n + 3)
+        coeff = coeff * factor
+        term = term * x4
+        total = total + coeff * term
+    return total
+
+
+def gamma(x):
+    """Γ(z), with composite-aware pole handling.
+
+    Γ has simple poles at 0, −1, −2, …, with residue `(−1)ⁿ/n!` at −n.
+    Near a pole, `Γ(−n + h) ~ (−1)ⁿ / (n! · h)` — a structural ∞ scaled by
+    the residue coefficient. At regular points we return only the dim-0
+    value (Γ(a)) — the full Taylor expansion would require digamma /
+    polygamma functions, which stdlib doesn't provide. For most limit
+    evaluations `Γ(a + small h) ≈ Γ(a)` at dim 0 suffices.
+    """
+    if isinstance(x, (int, float)):
+        return math.gamma(float(x))
+    if _is_nothing(x):
+        raise CompositionError("gamma of empty composite is undefined")
+    if _has_positive_dims(x):
+        pos = {d: c for d, c in x._d.items() if d > 0 and abs(c) > 1e-15}
+        leading = pos[max(pos)]
+        if leading > 0:
+            # Γ(+∞) is a scalar-infinite value, not a structural dim-1 ∞
+            # (Principle 3: no ×0/×∞ happened). Placing it at dim 0 makes
+            # downstream `__pow__` trigger its scalar-∞ refusal and fall
+            # back to numerical extrapolation for Stirling-like cases
+            # (e.g. `n / factorial(n)^(1/n) → e`).
+            return Composite({0: math.inf})
+        raise CompositionError("gamma(−∞) is oscillatory, undefined")
+
+    a = x.st()
+    h = Composite({d: c for d, c in x._d.items() if d != 0 and abs(c) > 1e-15})
+
+    # Pole at non-positive integer: Γ(−n + h) ~ (−1)ⁿ / (n! · h).
+    if a == int(a) and a <= 0:
+        n = -int(a)
+        residue = ((-1) ** n) / math.factorial(n)
+        if not h._d:
+            raise CompositionError("gamma at exact pole (integer ≤ 0)")
+        # h's sign determines direction into the pole.
+        neg = {d: c for d, c in h._d.items() if d < 0 and abs(c) > 1e-15}
+        top_neg = neg[max(neg)] if neg else 0.0
+        sign = 1.0 if top_neg * residue > 0 else -1.0
+        return Composite({1: sign * math.inf})
+
+    # Regular point: base value at dim 0.
+    return Composite({0: math.gamma(a)})
+
+
+def factorial(n):
+    """n! for non-negative integer n, Γ(n+1) otherwise.
+
+    Returns `math.inf` for n > 170 to stay representable in double precision
+    (171! already overflows). Callers can then detect overflow as a finite
+    inf rather than triggering OverflowError.
+    """
+    if isinstance(n, (int, float)):
+        if n == int(n) and n >= 0:
+            ni = int(n)
+            if ni > 170:
+                raise OverflowError("factorial exceeds double precision")
+            return float(math.factorial(ni))
+        return math.gamma(float(n) + 1.0)   # may raise OverflowError
+    # Composite: Γ(n + 1)
+    return gamma(n + Composite({0: 1.0}))
+
+
+def binomial(n, k):
+    """Generalized binomial coefficient C(n, k) = Γ(n+1) / (Γ(k+1)·Γ(n-k+1))."""
+    if isinstance(n, (int, float)) and isinstance(k, (int, float)):
+        ni, ki = int(n), int(k)
+        if (n == ni and k == ki and 0 <= ki <= ni):
+            return math.comb(ni, ki)
+        return (math.gamma(float(n) + 1.0)
+                / (math.gamma(float(k) + 1.0)
+                   * math.gamma(float(n) - float(k) + 1.0)))
+    one = Composite({0: 1.0})
+    return gamma(n + one) / (gamma(k + one) * gamma(n - k + one))
+
+
+def _fresnelc_float(x, terms):
+    """C(x) for plain float via Taylor series."""
+    if x == 0:
+        return 0.0
+    x_sq = x * x
+    term = x
+    coeff = 1.0
+    total = coeff * term
+    x4 = x_sq * x_sq
+    for n in range(1, terms):
+        factor = (-(_HALF_PI * _HALF_PI)) / ((2 * n - 1) * (2 * n))
+        factor *= (4 * n - 3) / (4 * n + 1)
+        coeff = coeff * factor
+        term = term * x4
+        total = total + coeff * term
+    return total
+
+
+def cosm1(x, terms=12):
+    """cos(x) − 1, numerically stable for small x.
+
+    Decomposes as `cosm1(a+h) = (cos(a)−1) + cos(a)·(cos(h)−1) − sin(a)·sin(h)`.
+    The leading `1` from `cos(h)`'s Taylor series never materializes:
+    `cos(h) − 1 = −h²/2 + h⁴/24 − …` starts at dim −2 (for infinitesimal h).
+    No stdlib counterpart; useful for `(1 − cos(x)) / x² → 1/2` patterns.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        # Stable small-x form: cos(x) - 1 = -2·sin(x/2)²
+        return -2.0 * math.sin(float(x) / 2.0) ** 2
+    if _is_nothing(x):
+        return Composite({})
+    if _has_positive_dims(x):
+        # cos oscillates at infinity → AccumBounds-like; -1 offset is finite.
+        inner = _bounded_at_inf(math.cos, x)
+        return inner - Composite({0: 1.0})
+
+    a = x.st()
+    h = Composite({d: c for d, c in x._d.items() if d != 0 and abs(c) > 1e-15})
+    if not h._d:
+        return Composite({0: -2.0 * math.sin(a / 2.0) ** 2})
+
+    # sin_h = h − h³/6 + …  (starts at dim −1)
+    # cosm1_h = cos(h) − 1 = −h²/2 + h⁴/24 − …  (starts at dim −2)
+    sin_h = Composite({})
+    cosm1_h = Composite({})
+    term = Composite({0: 1.0})
+    for n in range(1, terms):
+        term = (term * h) / n
+        if n % 2 == 1:
+            sign = (-1) ** ((n - 1) // 2)
+            sin_h = sin_h + (term if sign > 0 else -term)
+        else:
+            sign = (-1) ** (n // 2)
+            cosm1_h = cosm1_h + (term if sign > 0 else -term)
+
+    # cosm1(a+h) = (cos(a)−1) + cos(a)·cosm1_h − sin(a)·sin_h
+    base_cosm1 = -2.0 * math.sin(a / 2.0) ** 2
+    cos_a = math.cos(a)
+    sin_a = math.sin(a)
+    result = cos_a * cosm1_h - sin_a * sin_h
+    if base_cosm1 != 0:
+        result = result + Composite({0: base_cosm1})
+    return result
+
+
+def log1p(x, terms=15):
+    """ln(1 + x), numerically stable for small x.
+
+    Uses `log1p(a+h) = log1p(a) + sum_{n≥1} (-1)^{n+1} · (h/(1+a))^n / n`.
+    `math.log1p(a)` is the single float rounding at dim 0. For `a = 0` the
+    leading `ln(1)` term vanishes and the series starts at `h` itself.
+    """
+    terms = _effective_terms(terms)
+    if isinstance(x, (int, float)):
+        return math.log1p(float(x))
+    if _is_nothing(x):
+        return Composite({})
+
+    a = x.st()
+    if 1 + a <= 0:
+        raise ValueError("log1p requires 1 + x > 0")
+
+    h = Composite({d: c for d, c in x._d.items() if d != 0 and abs(c) > 1e-15})
+
+    # Asymptotic: x → +∞ → log1p → +∞ (lossy); x → −1⁺ separately.
+    pos = {d: c for d, c in h._d.items() if d > 0}
+    if pos:
+        if pos[max(pos)] > 0:
+            return Composite({1: math.inf})   # lossy +∞ marker
+        raise ValueError("log1p of argument tending to −∞")
+
+    if not h._d:
+        return Composite({0: math.log1p(a)})
+
+    ratio = h / R(1.0 + a)                     # h / (1+a)
+    result = Composite({0: math.log1p(a)}) if a != 0 else Composite({})
+    term = Composite({0: 1.0})
+    for n in range(1, terms):
+        term = term * ratio                    # (h/(1+a))^n
+        sign = 1 if n % 2 == 1 else -1
+        result = result + (sign / n) * term
+    return result
 
 
 def sqrt(x, terms=12):
@@ -707,21 +1242,24 @@ def sqrt(x, terms=12):
 
 
 def _sqrt_binomial(x, a, terms):
+    """sqrt(a + h) via generalized binomial series with derivative recurrence.
+
+    Identity:  sqrt(a + h) = sqrt(a) · (1 + h/a)^(1/2)
+    Binomial coefficients for exponent α = 1/2 satisfy the recurrence
+        c_n = c_{n-1} · (α - (n-1)) / n
+    so  c_0 = 1, c_1 = 1/2, c_2 = -1/8, c_3 = 1/16, ...
+    `math.sqrt(a)` is the single float rounding at dim 0; all correction
+    coefficients are exact rationals.
+    """
     sqrt_a = math.sqrt(a)
-    h_part = x - R(a)
-    ratio = h_part / R(a)
-    def binom(n):
-        if n == 0:
-            return 1
-        r = 1
-        for k in range(n):
-            r *= (0.5 - k)
-        return r / math.factorial(n)
+    ratio = (x - R(a)) / R(a)                 # h / a
     result = Composite({0: sqrt_a})
-    power = Composite({0: 1.0})
+    coeff = 1.0                                 # binomial c_0
+    term = Composite({0: 1.0})                  # (h/a)^0
     for n in range(1, terms):
-        power = power * ratio
-        result = result + binom(n) * sqrt_a * power
+        coeff = coeff * (0.5 - (n - 1)) / n     # c_n = c_{n-1} · (α-(n-1))/n
+        term = term * ratio                     # (h/a)^n
+        result = result + (sqrt_a * coeff) * term
     return result
 
 

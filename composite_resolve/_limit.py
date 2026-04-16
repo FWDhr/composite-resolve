@@ -53,10 +53,13 @@ def limit(f, to=0, dir="both", truncation=20):
     if not math.isfinite(to) and to != math.inf and to != -math.inf:
         raise ValueError(f"Invalid limit point: {to}")
 
-    # Fast path for regular points: if f(float(to)) returns a finite float
-    # cleanly, that IS the limit. Composite arithmetic is only load-bearing
-    # when dimensions actually cancel (×0 / ×∞ at the limit point). For
-    # regular points it's pure overhead — a single float evaluation suffices.
+    # Fast path for regular points: if f is continuous at `to` and f(float(to))
+    # is finite, that value IS the limit. Composite arithmetic is only
+    # load-bearing when dimensions actually cancel (×0 / ×∞) or when the
+    # function has a discontinuity at the limit point. We verify continuity by
+    # probing at `to ± ε` in the directions required by `dir` — if the probe
+    # disagrees with f(to), the point is discontinuous (e.g. `floor(x) at 2`
+    # under dir='-') and we fall through to composite evaluation.
     if math.isfinite(to):
         import warnings as _w
         try:
@@ -64,7 +67,39 @@ def limit(f, to=0, dir="both", truncation=20):
                 _w.simplefilter("ignore", RuntimeWarning)
                 y = f(float(to))
             if isinstance(y, (int, float)) and math.isfinite(y):
-                return float(y)
+                # eps large enough to expose second-order change near points
+                # with zero first derivative (e.g. floor(cos(x)) at x=0,
+                # where cos(1e-9) rounds to exactly 1.0 in double precision).
+                eps = 1e-6 * (abs(float(to)) + 1.0)
+                rel_tol = 1e-4 * (abs(y) + 1e-10) + 1e-10
+                # Track probe outcomes separately — we need to distinguish
+                # "probe disagreed (discontinuity)" from "probe raised
+                # (function undefined on that side)".
+                all_agree = True
+                any_raised = False
+                any_value_disagreed = False
+                for sign in ((1,) if dir == "+" else
+                             (-1,) if dir == "-" else (1, -1)):
+                    try:
+                        with _w.catch_warnings():
+                            _w.simplefilter("ignore", RuntimeWarning)
+                            yp = f(float(to) + sign * eps)
+                        if not (isinstance(yp, (int, float))
+                                and math.isfinite(yp)
+                                and abs(yp - y) < rel_tol):
+                            all_agree = False
+                            any_value_disagreed = True
+                    except Exception:
+                        all_agree = False
+                        any_raised = True
+                if all_agree:
+                    return float(y)
+                # Boundary-defined case: all one-sided probes raised (function
+                # undefined on requested side) but f(to) itself is finite.
+                # SymPy convention: `limit(sqrt(x), x, 0, '-')` = 0.
+                if (any_raised and not any_value_disagreed
+                        and dir in ("+", "-")):
+                    return float(y)
         except (ZeroDivisionError, ValueError, OverflowError, TypeError,
                 AttributeError):
             pass  # fall through; composite path handles errors / raises CompositionError
@@ -218,10 +253,16 @@ def _limit_one_sided(f, to, dir, truncation):
 
     st_val = result.st()
 
-    # NaN/Inf contamination
+    # NaN/Inf contamination at dim 0
     if not math.isfinite(st_val):
         return _recover(f, to, dir, truncation, _at_inf,
                         "Algebraic evaluation produced NaN/Inf.")
+
+    # Nonfinite coefficients at any dim (even negative) signal a lossy
+    # operation (∞·0, ∞/∞, …) whose rate we lost. Don't trust st_val.
+    if any(not math.isfinite(c) for c in result._d.values()):
+        return _recover(f, to, dir, truncation, _at_inf,
+                        "Algebraic result has lossy (nonfinite) coefficients.")
 
     # Positive dims → divergence. The HIGHEST positive dimension dominates
     # all lower ones (∞² beats ∞ beats finite), so the sign of the leading
@@ -281,12 +322,13 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
             taylor_candidates = []
             value_candidates = []
 
-            # Probe eps schedule ordered gentle → aggressive. value_candidates
-            # ends up sorted by closeness-to-limit. When aggressive probes
-            # overflow (e.g. `5^(1/x)` at x ≤ 1e-3), only the gentle ones
-            # remain and the convergence check still sees "the closest
-            # surviving samples" as the latest entries.
-            _probe_eps = [1e-1, 3e-2, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+            # Probe eps schedule ordered gentle → aggressive. Finer spacing
+            # helps functions whose probes only partially succeed
+            # (e.g. `sqrt(sin(1/x))`). Stops at 1e-7 — going smaller hits
+            # double-precision rounding where `cos(1e-9)` rounds to exactly
+            # `1.0`, producing misleading "agreement" with `f(to)`.
+            _probe_eps = [1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4,
+                          3e-5, 1e-5, 3e-6, 1e-6, 3e-7, 1e-7]
 
             for k in range(len(_probe_eps)):
                 eps = _probe_eps[k]
@@ -329,19 +371,26 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
                 except (OverflowError, ValueError):
                     pass
 
-            # Taylor converged
-            if len(taylor_candidates) >= 2:
-                if abs(taylor_candidates[-1] - taylor_candidates[-2]) < \
-                        1e-6 * (abs(taylor_candidates[-1]) + 1e-100):
-                    return taylor_candidates[-1]
-
-            # Value convergence
+            # Value convergence (check first — robust against composite
+            # evaluations that dropped derivative info, which makes Taylor
+            # extrapolation misleading even when probe st values are fine).
             if len(value_candidates) >= 3:
                 v = value_candidates
                 d1 = abs(v[-1] - v[-2])
                 d2 = abs(v[-2] - v[-3])
                 if d1 <= d2 and d1 < 1e-3 * (abs(v[-1]) + 1e-100):
                     return v[-1]
+
+            # Taylor convergence (refined extrapolation when composite
+            # arithmetic propagated correct derivatives through f).
+            if len(taylor_candidates) >= 2:
+                if abs(taylor_candidates[-1] - taylor_candidates[-2]) < \
+                        1e-6 * (abs(taylor_candidates[-1]) + 1e-100):
+                    return taylor_candidates[-1]
+
+            # Secondary value heuristic
+            if len(value_candidates) >= 3:
+                v = value_candidates
                 if len(v) >= 4 and all(abs(vi) < 1e-3 for vi in v[-3:]):
                     return 0.0
 
@@ -359,7 +408,7 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
                 # Convergence to zero: magnitudes monotonically shrinking,
                 # last one much smaller than the first.
                 monotone_down = all(mags[i+1] < mags[i] for i in range(len(mags)-1))
-                if monotone_down and mags[-1] < 0.01 * mags[0] and mags[-1] < 0.1:
+                if monotone_down and mags[-1] < 0.1 * mags[0] and mags[-1] < 0.01:
                     return 0.0
     finally:
         restore_math()
@@ -378,24 +427,35 @@ def _extrapolate_inf(f, to, truncation, n_probes=6):
     try:
         patch_math()
         candidates = []
-        for k in range(n_probes):
-            x_val = sign * 10 ** (k + 2)  # 100, 1000, ..., 10^7
+        inf_probes = []          # track ±∞ probes separately
+        # Probe schedule ordered from moderate → large. Sequence balances
+        # overflow avoidance (functions like `4^(x+1)` at x≥1000) against
+        # the need for enough samples to see slow convergence (expressions
+        # like `1/n` capped by factorial overflow at n≤170).
+        _probes = [10, 30, 50, 100, 150, 300, 1000, 10_000, 1e6, 1e9]
+        for k in range(min(len(_probes), n_probes + 4)):
+            x_val = sign * _probes[k]
+            # Plain float first — composite-seeded probes at infinity can
+            # blow up to many-dim composites (e.g. `3^(-composite)` runs
+            # polynomial long division on a 20-dim denominator) and hang.
+            # Plain float gives the correct value immediately; we lose
+            # Taylor-extrapolation info but value convergence is primary.
             result = None
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
-                    result = f(_seeded(x_val))
+                    result = f(x_val)
             except (ValueError, ZeroDivisionError, OverflowError,
-                    LimitDoesNotExistError, CompositionError):
+                    LimitDoesNotExistError, CompositionError, TypeError):
                 pass
 
             if result is None:
                 try:
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", RuntimeWarning)
-                        result = f(x_val)
+                        result = f(_seeded(x_val))
                 except (ValueError, ZeroDivisionError, OverflowError,
-                        LimitDoesNotExistError, CompositionError, TypeError):
+                        LimitDoesNotExistError, CompositionError):
                     continue
 
             if not isinstance(result, Composite):
@@ -404,6 +464,23 @@ def _extrapolate_inf(f, to, truncation, n_probes=6):
             st = result.st()
             if math.isfinite(st):
                 candidates.append(st)
+            elif math.isinf(st):
+                inf_probes.append(st)
+
+        # All-∞ probes (same sign): the limit diverges. e.g. `oo / (x²-4)` at ∞.
+        if not candidates and inf_probes and len(inf_probes) >= 2:
+            if all(p > 0 for p in inf_probes) or all(p < 0 for p in inf_probes):
+                raise LimitDivergesError(inf_probes[0])
+
+        # Outlier filter: at very large probe values, float-precision artifacts
+        # can make the last probe collapse (e.g. `(1+1e-18)^1e18` evaluates to 1
+        # in float). Detect with a sudden jump-back-from-converging trend.
+        if len(candidates) >= 4:
+            d_last = abs(candidates[-1] - candidates[-2])
+            d_prev = abs(candidates[-2] - candidates[-3])
+            d_old  = abs(candidates[-3] - candidates[-4])
+            if d_last > 100 * max(d_prev, d_old, 1e-100):
+                candidates = candidates[:-1]
 
         if len(candidates) >= 3:
             v = candidates
@@ -429,10 +506,21 @@ def _extrapolate_inf(f, to, truncation, n_probes=6):
                     and mags[-1] > 5 and mags[-1] > 3 * mags[0]):
                 raise LimitDivergesError(math.inf if v[-1] > 0 else -math.inf)
 
-            # Convergence to zero: magnitudes monotonically shrinking to tiny.
+            # Convergence to zero: magnitudes monotonically shrinking.
             monotone_down = all(mags[i+1] < mags[i] for i in range(len(mags)-1))
-            if monotone_down and mags[-1] < 0.01 * mags[0] and mags[-1] < 0.1:
+            if monotone_down and mags[-1] < 0.1 * mags[0] and mags[-1] < 0.01:
                 return 0.0
+
+            # Envelope-shrinkage detection: the function oscillates (not
+            # monotone) but the maximum magnitude over the tail is much
+            # smaller than over the head — signature of a bounded factor
+            # times a decaying envelope, e.g. `cos(x)·sqrt(x)/(x+1)` at ∞.
+            if len(v) >= 6:
+                half = len(v) // 2
+                head_max = max(abs(vi) for vi in v[:half])
+                tail_max = max(abs(vi) for vi in v[half:])
+                if tail_max < 0.1 * head_max and tail_max < 0.01:
+                    return 0.0
     finally:
         restore_math()
         _min_terms[0] = old_min

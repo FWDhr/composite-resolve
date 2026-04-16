@@ -14,13 +14,34 @@ limit() patches them automatically during evaluation.
 
 import math as _pymath
 
+# Capture at import-time, before any `patch_math()` can replace attributes.
+_orig_log = _pymath.log
+
 from composite_resolve._core import (
     sin, cos, tan, exp, ln, sqrt,
     atan, asin, acos, sinh, cosh, tanh,
+    expm1, log1p, cosm1,
+    floor, ceiling,
+    frac, cbrt, Mod,
+    erf, erfc, erfi, fresnels, fresnelc,
+    gamma, factorial, binomial,
 )
+# Stdlib names `math.ceil` (no trailing "ing"), SymPy uses `ceiling`.
+# Expose both so either conventional import resolves.
+ceil = ceiling
 
-# Alias log → ln for math module compatibility
-log = ln
+def log(x, base=None):
+    """log(x) (natural log) or log(x, base) = ln(x) / ln(base).
+
+    Matches `math.log`'s 2-arg form.  Composite-aware via `ln`.
+    Uses `_orig_log` (captured at import time) for scalar base to avoid
+    recursion when `math.log` is monkey-patched during evaluation.
+    """
+    if base is None:
+        return ln(x)
+    if isinstance(base, (int, float)):
+        return ln(x) / _orig_log(float(base))
+    return ln(x) / ln(base)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +85,11 @@ def acoth(x): return atanh(1 / x)
 
 __all__ = [
     "sin", "cos", "tan", "exp", "log", "ln", "sqrt",
+    "expm1", "log1p", "cosm1",
+    "floor", "ceil", "ceiling",
+    "frac", "cbrt", "Mod",
+    "erf", "erfc", "erfi", "fresnels", "fresnelc",
+    "gamma", "factorial", "binomial",
     "sinh", "cosh", "tanh",
     "asin", "acos", "atan",
     "cot", "sec", "csc", "coth", "sech", "csch",
