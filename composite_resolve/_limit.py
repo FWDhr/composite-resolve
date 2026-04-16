@@ -290,15 +290,28 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
 
             for k in range(len(_probe_eps)):
                 eps = _probe_eps[k]
+                x_val = to + sign * eps
 
+                # Try composite-seeded probe first (enables Taylor extrapolation).
+                # If it hits a non-representable composite op, fall back to plain
+                # float — the function is evaluated numerically at the probe.
+                result = None
                 try:
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", RuntimeWarning)
-                        x_comp = _seeded(to + sign * eps)
-                        result = f(x_comp)
+                        result = f(_seeded(x_val))
                 except (ValueError, ZeroDivisionError, OverflowError,
-                        LimitDoesNotExistError):
-                    continue
+                        LimitDoesNotExistError, CompositionError):
+                    pass
+
+                if result is None:
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", RuntimeWarning)
+                            result = f(x_val)
+                    except (ValueError, ZeroDivisionError, OverflowError,
+                            LimitDoesNotExistError, CompositionError, TypeError):
+                        continue
 
                 if not isinstance(result, Composite):
                     result = R(float(result))
@@ -367,13 +380,23 @@ def _extrapolate_inf(f, to, truncation, n_probes=6):
         candidates = []
         for k in range(n_probes):
             x_val = sign * 10 ** (k + 2)  # 100, 1000, ..., 10^7
+            result = None
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     result = f(_seeded(x_val))
             except (ValueError, ZeroDivisionError, OverflowError,
-                    LimitDoesNotExistError):
-                continue
+                    LimitDoesNotExistError, CompositionError):
+                pass
+
+            if result is None:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        result = f(x_val)
+                except (ValueError, ZeroDivisionError, OverflowError,
+                        LimitDoesNotExistError, CompositionError, TypeError):
+                    continue
 
             if not isinstance(result, Composite):
                 result = R(float(result))

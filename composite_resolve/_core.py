@@ -163,7 +163,17 @@ class Composite:
         return Composite({d: -c for d, c in self._d.items()})
 
     def __mul__(self, other):
-        """Multiplication via direct convolution."""
+        """Multiplication via direct convolution.
+
+        Integer-dimension arithmetic: `|a|ₘ · |b|ₙ = |a·b|_{m+n}`.
+
+        Non-finite coefficients (`±∞`, `NaN`) are markers of a "lossy"
+        fallback value produced when a composite operation dropped to
+        real-valued math (e.g. `ln(|1|₋₁) → |-∞|₁`). When such a marker
+        ends up at a dim ≤ 0 after convolution, it's the signature of a
+        `0·∞` cancellation whose rate was lost — refuse and let the
+        outer evaluator (`limit`) fall back to numerical extrapolation.
+        """
         if isinstance(other, (int, float)):
             if other == 0:
                 return Composite({})
@@ -174,6 +184,11 @@ class Composite:
                 for d2, c2 in other._d.items():
                     d = d1 + d2
                     result[d] = result.get(d, 0.0) + c1 * c2
+            for d, c in result.items():
+                if not math.isfinite(c) and d <= 0:
+                    raise CompositionError(
+                        "0·∞ indeterminate: lossy-infinity coefficient "
+                        "cancelled into a finite/infinitesimal dimension")
             return Composite(result)
         return NotImplemented
 
@@ -193,6 +208,14 @@ class Composite:
             # Single-term divisor: fast path
             if len(other._d) == 1:
                 div_dim, div_coeff = next(iter(other._d.items()))
+                # Refuse when dividing by a lossy infinity (nonfinite
+                # coefficient at positive dim). Otherwise the lossy-ness is
+                # silently absorbed into a numerically-zero quotient and we
+                # lose the information that the result is indeterminate.
+                if not math.isfinite(div_coeff) and div_dim > 0:
+                    raise CompositionError(
+                        "Division by lossy-infinity composite; quotient "
+                        "would silently lose rate information")
                 return Composite({d - div_dim: c / div_coeff
                                   for d, c in self._d.items()})
             # Multi-term: polynomial long division (deconvolution)
@@ -596,13 +619,13 @@ def ln(x, terms=15):
     top_dim = dims_sorted[0]
     top_coeff = coeffs[top_dim]
 
-    # Structurally unbounded (input → ±∞) or infinitesimal (input → 0).
-    # Integer dimensions can't faithfully represent ln's sub-polynomial
-    # growth rate, so rather than pick a wrong answer or a numerical-fallback
-    # patch, refuse explicitly.
+    # Structurally unbounded (input → +∞): ln(+∞) = +∞. Lossy fallback —
+    # embed the real-valued answer as a nonfinite coefficient at dim 1 so
+    # downstream `__mul__` can detect 0·∞ cancellations and refuse.
     if top_dim > 0:
-        raise CompositionError(
-            "ln is not composable with structurally unbounded composite input")
+        if top_coeff > 0:
+            return Composite({1: math.inf})      # ln(+∞) = +∞ (lossy)
+        raise ValueError("ln requires positive input")   # -∞ → log undef
 
     # Standard: finite positive standard part → Taylor expansion around st.
     a = x.st()
@@ -617,9 +640,15 @@ def ln(x, terms=15):
             result = result + sign * power / n
         return result
 
+    # a == 0 with top_dim ≤ 0: input → 0⁺ (if leading infinitesimal positive).
+    # ln(0⁺) = -∞. Lossy fallback at dim 1.
     if a == 0:
-        raise CompositionError(
-            "ln is not composable with infinitesimal composite input")
+        neg_dims = {d: c for d, c in coeffs.items() if d < 0 and abs(c) > 1e-15}
+        if neg_dims:
+            top_neg = neg_dims[max(neg_dims)]
+            if top_neg > 0:
+                return Composite({1: -math.inf})   # ln(0⁺) = -∞ (lossy)
+        raise ValueError("ln requires positive input")
 
     raise ValueError("ln requires positive input")
 
