@@ -74,7 +74,11 @@ def atanh(x): return 0.5 * ln((1 + x) / (1 - x))
 # Inverse reciprocal trig / hyperbolic.
 # ---------------------------------------------------------------------------
 
-def acot(x):  return _pymath.pi / 2 - atan(x)
+def acot(x):
+    """Inverse cotangent, SymPy/Mathematica-discontinuous convention:
+    acot(x) = atan(1/x). Range (−π/2, 0) ∪ (0, π/2), jumps at 0.
+    """
+    return atan(1 / x)
 def asec(x):  return acos(1 / x)
 def acsc(x):  return asin(1 / x)
 

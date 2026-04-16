@@ -16,7 +16,7 @@ from composite_resolve._core import (
     _seeded, _min_terms, _is_nothing,
 )
 from composite_resolve._errors import (
-    LimitDoesNotExistError, LimitDivergesError,
+    LimitDoesNotExistError, LimitUndecidableError, LimitDivergesError,
     CompositionError, SingularityError,
 )
 from composite_resolve._compat import patch_math, restore_math
@@ -123,12 +123,13 @@ def limit(f, to=0, dir="both", truncation=20):
             raise LimitDoesNotExistError(
                 "Right limit diverges but left limit is finite",
                 left_limit=left, right_limit=e.value)
-        except LimitDoesNotExistError:
-            # Right side undefined: fall back to left side if that works.
+        except (LimitDoesNotExistError, LimitUndecidableError):
+            # Right side undefined or undeterminable: fall back to left
+            # if the function is only defined on that side.
             if _function_undefined_on_side(f, to, "+"):
                 try:
                     return _limit_one_sided(f, to, "-", truncation)
-                except LimitDivergesError as e:
+                except LimitDivergesError:
                     raise
             raise
 
@@ -138,10 +139,10 @@ def limit(f, to=0, dir="both", truncation=20):
             raise LimitDoesNotExistError(
                 "Left limit diverges but right limit is finite",
                 left_limit=e.value, right_limit=right)
-        except LimitDoesNotExistError:
-            # Left side is undefined or can't be resolved. If the function is
-            # only defined on the right (entropy `-p·log p` at 0, `sqrt(x)` at
-            # 0, etc.), fall back to the right-sided limit.
+        except (LimitDoesNotExistError, LimitUndecidableError):
+            # Left side undefined or undeterminable. If the function is
+            # only defined on the right (entropy `-p·log p` at 0, `sqrt(x)`
+            # at 0, …), take the right-sided limit as the answer.
             if _function_undefined_on_side(f, to, "-"):
                 return right
             raise
@@ -228,9 +229,13 @@ def _limit_one_sided(f, to, dir, truncation):
                     extrap = _extrapolate(f, to, dir, truncation)
                 if extrap is not None:
                     return extrap
-                raise LimitDoesNotExistError(
-                    "Function has a domain error at the limit point "
-                    "and extrapolation did not converge.")
+                raise LimitUndecidableError(
+                    "composite-resolve could not determine this limit. "
+                    "The composite primitive hit a domain error at the "
+                    "limit point and numerical extrapolation did not "
+                    "converge. The mathematical limit may still exist — "
+                    "try a symbolic engine (SymPy) or higher-precision "
+                    "tool (mpmath).")
     finally:
         restore_math()
         _min_terms[0] = old_min
@@ -297,7 +302,11 @@ def _recover(f, to, dir, truncation, at_inf, error_msg):
         if extrap is not None:
             return extrap
 
-    raise LimitDoesNotExistError(error_msg)
+    raise LimitUndecidableError(
+        "composite-resolve could not determine this limit — "
+        + error_msg +
+        " The mathematical limit may still exist — try a symbolic engine "
+        "(SymPy) or higher-precision tool (mpmath).")
 
 
 def _extrapolate(f, to, dir, truncation, n_probes=6):
@@ -410,6 +419,24 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
                 monotone_down = all(mags[i+1] < mags[i] for i in range(len(mags)-1))
                 if monotone_down and mags[-1] < 0.1 * mags[0] and mags[-1] < 0.01:
                     return 0.0
+
+                # Oscillation detection: probes have mixed signs, bounded
+                # magnitudes, and neither converge nor shrink. That's a
+                # genuine "limit does not exist" signal, not just "we
+                # couldn't determine it" — raise DoesNotExist.
+                if len(v) >= 4:
+                    has_pos = any(vi > 0 for vi in v)
+                    has_neg = any(vi < 0 for vi in v)
+                    mag_max = max(mags)
+                    mag_min = min(mags)
+                    if (has_pos and has_neg
+                            and mag_max < 1e6
+                            and mag_min > 0.01 * mag_max):
+                        raise LimitDoesNotExistError(
+                            "Probe values oscillate between positive and "
+                            "negative with bounded magnitude — the limit "
+                            "does not exist.",
+                            left_limit=None, right_limit=None)
     finally:
         restore_math()
         _min_terms[0] = old_min
@@ -487,9 +514,16 @@ def _extrapolate_inf(f, to, truncation, n_probes=6):
             d1 = abs(v[-1] - v[-2])
             d2 = abs(v[-2] - v[-3])
             # Tight convergence: last step is already small vs. the value
-            # itself. Use `<=` so exactly-equal probes (d1 == d2 == 0) count
-            # as converged.
-            if d1 <= d2 and d1 < 1e-3 * (abs(v[-1]) + 1e-100):
+            # itself. The monotonicity clause (d1 <= d2) is only enforced
+            # when d1 isn't already vanishingly small — at that scale, the
+            # "last step went up a tick" is float-precision noise, not a
+            # sign of divergence.
+            tol = 1e-3 * (abs(v[-1]) + 1e-100)
+            # Relax monotonicity when d1 is already vanishingly small in
+            # absolute terms — that indicates float-precision noise at the
+            # tail, not a real uptick.
+            noise_floor = 1e-8 * max(abs(v[-1]), 1.0)
+            if d1 < tol and (d1 <= d2 or d1 < noise_floor):
                 return v[-1]
             if len(v) >= 4 and all(abs(vi) < 1e-3 for vi in v[-3:]):
                 return 0.0

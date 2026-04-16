@@ -27,6 +27,7 @@ from composite_resolve._classify import classify, residue
 from composite_resolve._errors import (
     CompositeResolveError,
     LimitDoesNotExistError,
+    LimitUndecidableError,
     LimitDivergesError,
     SingularityError,
     CompositionError,
@@ -39,6 +40,7 @@ __all__ = [
     "limit", "resolve", "evaluate", "safe",
     "taylor", "classify", "residue",
     "CompositeResolveError", "LimitDoesNotExistError",
+    "LimitUndecidableError",
     "LimitDivergesError", "SingularityError", "CompositionError",
     "UnsupportedFunctionError",
     "Regular", "Removable", "Pole", "Essential",
