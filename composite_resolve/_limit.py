@@ -53,6 +53,22 @@ def limit(f, to=0, dir="both", truncation=20):
     if not math.isfinite(to) and to != math.inf and to != -math.inf:
         raise ValueError(f"Invalid limit point: {to}")
 
+    # Fast path for regular points: if f(float(to)) returns a finite float
+    # cleanly, that IS the limit. Composite arithmetic is only load-bearing
+    # when dimensions actually cancel (×0 / ×∞ at the limit point). For
+    # regular points it's pure overhead — a single float evaluation suffices.
+    if math.isfinite(to):
+        import warnings as _w
+        try:
+            with _w.catch_warnings():
+                _w.simplefilter("ignore", RuntimeWarning)
+                y = f(float(to))
+            if isinstance(y, (int, float)) and math.isfinite(y):
+                return float(y)
+        except (ZeroDivisionError, ValueError, OverflowError, TypeError,
+                AttributeError):
+            pass  # fall through; composite path handles errors / raises CompositionError
+
     # Handle dir="both": compute left and right, compare
     if dir == "both" and math.isfinite(to):
         try:
@@ -95,8 +111,10 @@ def limit(f, to=0, dir="both", truncation=20):
                 return right
             raise
 
-        if abs(right - left) < 1e-10 * (abs(right) + abs(left) + 1e-100):
-            return right
+        # Tolerance that covers both algebraic evaluation (exact to floating
+        # precision) and numerical extrapolation fallbacks (typically ~1e-6).
+        if abs(right - left) < 1e-5 * (abs(right) + abs(left)) + 1e-8:
+            return 0.5 * (right + left)
         raise LimitDoesNotExistError(
             f"One-sided limits disagree: left={left}, right={right}",
             left_limit=left, right_limit=right)
@@ -263,8 +281,15 @@ def _extrapolate(f, to, dir, truncation, n_probes=6):
             taylor_candidates = []
             value_candidates = []
 
-            for k in range(n_probes):
-                eps = 10 ** (-(k + 2))
+            # Probe eps schedule ordered gentle → aggressive. value_candidates
+            # ends up sorted by closeness-to-limit. When aggressive probes
+            # overflow (e.g. `5^(1/x)` at x ≤ 1e-3), only the gentle ones
+            # remain and the convergence check still sees "the closest
+            # surviving samples" as the latest entries.
+            _probe_eps = [1e-1, 3e-2, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+
+            for k in range(len(_probe_eps)):
+                eps = _probe_eps[k]
 
                 try:
                     with warnings.catch_warnings():

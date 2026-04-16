@@ -78,6 +78,8 @@ class Composite:
                 return ''.join(sub[int(d)] for d in str(n))
             return "₋" + ''.join(sub[int(d)] for d in str(-n))
         def fmt_coeff(c):
+            if not math.isfinite(c):
+                return "∞" if c > 0 else "-∞" if c < 0 else "NaN"
             if c == int(c):
                 return str(int(c))
             return f"{c:.6g}"
@@ -210,46 +212,135 @@ class Composite:
             for _ in range(n):
                 result = result * self
             return result
+
         if isinstance(n, float):
             if n == int(n):
                 return self ** int(n)
+            # Non-integer float exponent.
+            # (a) self is purely dim 0 → plain scalar power, no composite log.
+            if set(self._d) <= {0}:
+                c = self._d.get(0, 0.0)
+                if c > 0:
+                    return Composite({0: math.pow(c, n)})
+                if c == 0:
+                    if n > 0: return Composite({})
+                    raise ValueError("0 ** non-positive non-integer is indeterminate")
+                raise ValueError(f"Non-integer power of negative scalar: {c}^{n}")
+            # (b) self is structurally infinite → scalar 0 / inf at dim 0.
+            pos = {d: c for d, c in self._d.items() if d > 0 and abs(c) > 1e-15}
+            if pos:
+                leading = pos[max(pos)]
+                if leading > 0:
+                    return Composite({0: math.inf}) if n > 0 else Composite({})
+                raise CompositionError(
+                    "Non-integer power of structurally negative-infinite base")
+            # (c) Finite positive st + infinitesimals → call ln on self; its st > 0
+            #     so no CompositionError.
             return exp(Composite(n) * ln(self))
+
         if isinstance(n, Composite):
-            # If exponent's st is an integer, use repeated multiplication
-            # to avoid exp(n*ln(self)) which loses precision for infinitesimals.
+            # Reduce to simpler cases whenever possible.
+            # (a) Exponent is purely dim 0 → use the float-exponent path.
+            if set(n._d) <= {0}:
+                return self ** n.coeff(0)
+            # (b) Exponent has structural infinity → scalar 0/inf depending on
+            #     self's magnitude class. Doesn't invoke composite log.
+            n_pos = {d: c for d, c in n._d.items() if d > 0 and abs(c) > 1e-15}
+            if n_pos:
+                leading_exp = n_pos[max(n_pos)]
+                exp_to_plus_inf = leading_exp > 0
+                # Classify self's magnitude
+                self_pos = {d: c for d, c in self._d.items() if d > 0 and abs(c) > 1e-15}
+                if self_pos:
+                    # self → ±∞.  (+∞)^(+∞) = +∞, (+∞)^(-∞) = 0.
+                    if self_pos[max(self_pos)] > 0:
+                        return Composite({0: math.inf}) if exp_to_plus_inf else Composite({})
+                    raise CompositionError(
+                        "Structurally negative-infinite base raised to composite exponent")
+                a = self.st()
+                # If self has non-dim-0 components AND st == 1, this is the
+                # classical 1^∞ indeterminate form — the infinitesimal part
+                # is what determines the limit. Refuse; let extrapolation
+                # (or the Taylor path via exp(n · ln self)) resolve it.
+                has_nontrivial = any(d != 0 and abs(c) > 1e-15
+                                     for d, c in self._d.items())
+                if a == 1 and has_nontrivial:
+                    raise CompositionError(
+                        "1^∞ indeterminate form: base's infinitesimal part "
+                        "determines the limit; refusing algebraic shortcut")
+                if a == 1:
+                    return Composite({0: 1.0})      # exact 1 ^ anything = 1
+                if a > 1:
+                    return Composite({0: math.inf}) if exp_to_plus_inf else Composite({})
+                if 0 < a < 1:
+                    return Composite({}) if exp_to_plus_inf else Composite({0: math.inf})
+                # a <= 0: sign-dependent / indeterminate
+                raise CompositionError(
+                    "Non-positive base raised to structurally infinite composite exponent")
+            # (c) Exponent = integer-valued st + infinitesimals.
             n_st = n.st()
+            h = Composite({d: c for d, c in n._d.items() if d != 0 and abs(c) > 1e-15})
+            # Self has a scalar-infinite coefficient at dim 0 (e.g. from 5^INF)?
+            # Then base^exponent is an ∞^(composite) form; not resolvable
+            # purely algebraically. Refuse and let extrapolation handle it.
+            st_val = self.st()
+            if not math.isfinite(st_val):
+                raise CompositionError(
+                    "Scalar-infinite base raised to composite exponent is "
+                    "indeterminate algebraically; falling back is required")
             if n_st == int(n_st) and abs(n_st) < 100:
-                # Integer st: self^int_part * exp(h*ln(self)) for the correction
                 int_part = int(n_st)
-                h = Composite({d: c for d, c in n._d.items() if d != 0})
                 base_pow = self ** int_part
                 if not h._d:
                     return base_pow
-                # Correction: exp(h * ln(self))
+                if {d for d, c in self._d.items() if d > 0 and abs(c) > 1e-15}:
+                    return base_pow
                 return base_pow * exp(h * ln(self))
+            # (d) Non-integer st in exponent. ln(self) is only valid if self has
+            #     finite positive st.
+            if {d for d, c in self._d.items() if d > 0 and abs(c) > 1e-15}:
+                raise CompositionError(
+                    "Structurally infinite base with non-integer composite exponent")
             return exp(n * ln(self))
+
         raise TypeError(f"Power exponent must be int, float, or Composite, got {type(n)}")
 
     def __rpow__(self, base):
         """base ** self  —  plain float/int base with composite exponent.
 
-        Uses  base**x = exp(x * log(base))  for base > 0.
+        No composite `ln` is ever invoked: `log(base)` is a plain scalar.
+        Cases:
+          * exponent has structural infinity → scalar 0 / math.inf at dim 0
+            (Principle 3: no ×0/×∞ multiplication happened, no dim shift)
+          * exponent has finite st + infinitesimals → base^st · exp(h · log base)
+          * base = 1 short-circuit, base ≤ 0 refused
         """
-        if isinstance(base, (int, float)):
-            import math as _m
-            if base == 1:
-                # 1 ** anything = 1. Short-circuit to avoid exp(x * 0) which
-                # collapses to the empty composite and loses the value.
-                return Composite({0: 1.0})
-            if base > 0:
-                return exp(self * _m.log(base))
+        if not isinstance(base, (int, float)):
+            return NotImplemented
+        if base == 1:
+            return Composite({0: 1.0})
+        if base <= 0:
             if base == 0:
                 st = self.st()
                 if st > 0:
                     return Composite({})
                 raise ValueError("0 ** composite with non-positive exponent is indeterminate")
             raise ValueError(f"Cannot compute {base}**composite for negative base")
-        return NotImplemented
+
+        pos = {d: c for d, c in self._d.items() if d > 0 and abs(c) > 1e-15}
+        if pos:
+            exp_to_plus_inf = pos[max(pos)] > 0
+            base_gt_1 = base > 1
+            if exp_to_plus_inf == base_gt_1:
+                return Composite({0: math.inf})
+            return Composite({})
+
+        a = self.st()
+        h = Composite({d: c for d, c in self._d.items() if d < 0 and abs(c) > 1e-15})
+        base_a = math.pow(base, a)
+        if not h._d:
+            return Composite({0: base_a})
+        return Composite({0: base_a}) * exp(h * math.log(base))
 
     def __abs__(self):
         if not self._d:

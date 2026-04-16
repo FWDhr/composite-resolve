@@ -98,11 +98,11 @@ def classify(f, at=0, dir="both"):
             try:
                 result = f(x)
             except (TypeError, ValueError, ZeroDivisionError,
-                    OverflowError) as e:
+                    OverflowError, CompositionError) as e:
                 from composite_resolve._errors import LimitDoesNotExistError
                 if isinstance(e, LimitDoesNotExistError):
                     return Essential()
-                # Domain error — try to determine type from nearby eval
+                # Domain error or non-representable composite — fall back to probing.
                 return _classify_from_probes(f, at, dir)
     finally:
         restore_math()
