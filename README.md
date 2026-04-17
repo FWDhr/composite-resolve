@@ -2,9 +2,11 @@
 
 Evaluate Python functions at points where they're undefined.
 
-The library where you pass a plain numeric Python function and get exact limits via algebraic infinitesimal arithmetic, with provenance tracking. To my knowledge, this is the first library that does this directly on plain Python functions.
+Pass a plain numeric Python function and get exact limits via algebraic infinitesimal arithmetic. To my knowledge, this is the first library that does this directly on plain Python functions — no symbolic expressions, no approximation.
 
-Eliminates edge-case handling and numerical instability at singularities, just write the function and evaluate it everywhere.
+Note however, this is a mathematical correctness and continuity analysis tool, not a general execution safety mechanism. It is usefull for verifying the mathematical correctness of functions before they become production code.
+
+It can only be used as general execution safety mechamism at runtime in some very limited and specific cases like in physics-style modeling and signal processing math.
 
 ```python
 import math
@@ -18,7 +20,7 @@ sinc(0.5)  # → 0.9589 (normal computation)
 sinc(0)    # → 1.0 (singularity resolved)
 ```
 
-Uses composite arithmetic to resolve singularities algebraically. Works with any callable that uses standard Python arithmetic and `math` module functions. No symbolic expressions, no approximation. Pure Python, zero dependencies.
+Uses composite arithmetic to resolve singularities algebraically. Works with any callable that uses standard Python arithmetic and `math` module functions. Pure Python, zero dependencies.
 
 ## Install
 
@@ -65,18 +67,18 @@ resolve(lambda x: (math.exp(x) - 1) / x, at=0)          # → 1.0
 resolve(lambda x: (x**2 - 1) / (x - 1), at=1)           # → 2.0
 
 # Indeterminate forms
-limit(lambda x: x * math.log(x), to=0, dir="+")          # → 0.0    (0 * inf)
-limit(lambda x: x**x, to=0, dir="+")                      # → 1.0    (0^0)
-limit(lambda x: (1 + x)**(1/x), to=0)                     # → e      (1^inf)
-limit(lambda x: 1/x - 1/math.sin(x), to=0)                # → 0.0    (inf - inf)
+limit(lambda x: x * math.log(x), to=0, dir="+")          # → 0.0    (0 × ∞)
+limit(lambda x: x**x, to=0, dir="+")                      # → 1.0    (0⁰)
+limit(lambda x: (1 + x)**(1/x), to=0)                     # → e      (1^∞)
+limit(lambda x: 1/x - 1/math.sin(x), to=0)                # → 0.0    (∞ − ∞)
 
 # Limits at infinity
 limit(lambda x: (1 + 1/x)**x, to=math.inf)                # → e
 limit(lambda x: math.sin(x) / x, to=math.inf)              # → 0.0
 
 # One-sided limits
-limit(lambda x: 1/x, to=0, dir="+")   # raises LimitDivergesError (+inf)
-limit(lambda x: 1/x, to=0, dir="-")   # raises LimitDivergesError (-inf)
+limit(lambda x: 1/x, to=0, dir="+")   # raises LimitDivergesError (+∞)
+limit(lambda x: 1/x, to=0, dir="-")   # raises LimitDivergesError (-∞)
 limit(lambda x: 1/x, to=0)            # raises LimitDoesNotExistError
 
 # Singularity classification
@@ -93,7 +95,19 @@ taylor(lambda x: math.exp(x), at=0, order=4)
 
 The library evaluates functions using composite arithmetic. Instead of symbolic manipulation, the library substitutes a concrete algebraic infinitesimal into your function. The result carries enough structure to resolve 0/0, 0×∞, and all other indeterminate forms through ordinary arithmetic.
 
+
+
 The function is treated as a black box. No expression tree, no symbolic manipulation.
+
+### Evaluation layers
+
+1. **Fast path** — `f(float(to))` evaluated directly. If the point is regular (no singularity), this returns instantly. A continuity check at `to ± ε` prevents silent mis-evaluation at discontinuities.
+
+2. **Composite arithmetic** — the core primitive. Substitutes a seeded composite number at the limit point and evaluates `f` through the full derivative tower. Handles removable singularities, indeterminate forms, and pole detection algebraically.
+
+3. **Numerical fallback** — when composite arithmetic hits a representation it can't handle (e.g., `ln(∞)`, `floor` at infinity, factorial overflow), falls back to evaluating `f` at nearby float probe points and extrapolating convergence/divergence.
+
+4. **Honest refusal** — when none of the above can determine the answer, raises `LimitUndecidableError` (not `LimitDoesNotExistError`) to distinguish "we couldn't determine this" from "the limit genuinely does not exist."
 
 ## API
 
@@ -107,7 +121,10 @@ Evaluate `f` at a point where it would normally fail. Returns `math.inf` or `-ma
 
 ### `limit(f, to, dir="both", truncation=20) -> float`
 
-Compute the limit of `f(x)` as `x -> to`. Raises `LimitDivergesError` for infinite limits, `LimitDoesNotExistError` when the limit doesn't exist.
+Compute the limit of `f(x)` as `x → to`. Raises:
+- `LimitDivergesError` — limit is ±∞ (access `.value` for the sign)
+- `LimitDoesNotExistError` — limit genuinely does not exist (oscillation, one-sided limits disagree). Carries evidence in `.left_limit` / `.right_limit`.
+- `LimitUndecidableError` — CR could not determine the limit. The mathematical limit may still exist. Typical causes: double-precision overflow in probes, sub-polynomial growth rates the integer-dimension system can't represent, or expressions requiring log-space computation.
 
 ### `evaluate(f, at) -> float`
 
@@ -124,6 +141,43 @@ Returns `Regular`, `Removable`, `Pole`, or `Essential`.
 ### `residue(f, at=0) -> float`
 
 Residue at a pole.
+
+## Supported Math Functions
+
+`composite_resolve.math` provides composite-aware versions of 42 functions. These accept both plain floats and Composite objects — use them in functions passed to `limit()`/`resolve()` for guaranteed composite propagation, or use `math.*` / `numpy.*` which are patched automatically during evaluation.
+
+**Core transcendentals:**
+`sin` `cos` `tan` `exp` `log` `ln` `sqrt`
+
+**Inverse trig / hyperbolic:**
+`asin` `acos` `atan` `sinh` `cosh` `tanh`
+`asinh` `acosh` `atanh`
+
+**Reciprocal trig / hyperbolic:**
+`cot` `sec` `csc` `coth` `sech` `csch`
+
+**Inverse reciprocal:**
+`acot` `asec` `acsc` `asech` `acsch` `acoth`
+
+**Early-cancellation primitives** (numerically stable near cancellation points):
+`expm1` (= exp(x)−1), `log1p` (= ln(1+x)), `cosm1` (= cos(x)−1)
+
+**Step / piecewise** (direction-aware at discontinuities):
+`floor` `ceil` `ceiling` `frac`
+
+**Arithmetic:**
+`cbrt` (real cube root, handles negatives), `Mod` (mathematical modulo)
+
+**Error functions:**
+`erf` `erfc` `erfi`
+
+**Fresnel integrals:**
+`fresnels` `fresnelc`
+
+**Gamma family:**
+`gamma` (with pole handling at 0, −1, −2, …), `factorial`, `binomial`
+
+**Not yet supported:** Bessel functions (J, Y, I, K), exponential integral (Ei), Lambert W, elliptic integrals. These raise `NameError` if used in expressions passed to `limit()`.
 
 ## Examples
 
@@ -143,6 +197,15 @@ resolve(lambda p: -(0*math.log(p) + 1*math.log(1-p)), at=0, dir="+")  # → 0.0
 
 # Continuous compounding
 limit(lambda n: (1 + 0.05/n)**n, to=math.inf)  # → 1.05127
+```
+
+```python
+# Directional limits at discontinuities
+from composite_resolve.math import floor, ceiling
+
+limit(lambda x: floor(x), to=2, dir="+")   # → 2
+limit(lambda x: floor(x), to=2, dir="-")   # → 1
+limit(lambda x: ceiling(x), to=2, dir="+") # → 3
 ```
 
 ## Math Library Support
@@ -168,17 +231,29 @@ g(0)  # → 1.0
 
 `math` functions are patched during resolution. `numpy` functions dispatch via `__array_ufunc__`.
 
-**Important:** use `import math` not `from math import sin`. The `from` form captures the original function at import time — patching the module later doesn't reach it. See [limitations](docs/limitations.md) for details.
+**Important:** use `import math` not `from math import sin`. The `from` form captures the original function at import time — patching the module later doesn't reach it.
+
+## Error Semantics
+
+composite-resolve distinguishes three failure modes:
+
+| Error | Meaning | User action |
+|---|---|---|
+| `LimitDivergesError` | Limit is ±∞ | Access `.value` for the sign |
+| `LimitDoesNotExistError` | Limit genuinely doesn't exist — positive evidence (oscillation, one-sided limits disagree) | Check `.left_limit` / `.right_limit` for the one-sided values |
+| `LimitUndecidableError` | CR couldn't determine the limit — no claim about existence | Try a symbolic engine (SymPy) or higher-precision tool (mpmath) |
+
+`LimitUndecidableError` is NOT a subclass of `LimitDoesNotExistError`. They represent fundamentally different situations: evidence of non-existence vs. insufficient machinery.
 
 ## Limitations
 
-- Single-variable functions only
-- Use `import math` not `from math import sin` — the `from` form captures the original function, patching can't reach it
-- Functions must use `math` or `numpy` transcendentals (not `jax`, `torch`, etc.)
-- Not thread-safe during `limit()`/`resolve()`/`@safe` calls
-- Float-precision evaluation points (e.g., `math.pi/2` is not exactly pi/2)
-
-Some edge cases might still not be covered. Needs community scrutiny on evaluting the results.
+- **Single-variable functions only.** Multi-variable limits are out of scope.
+- **Use `import math` not `from math import sin`** — the `from` form captures the original function; patching can't reach it.
+- **Float-precision evaluation points.** `math.pi/2` is not exactly π/2 — limits at transcendental points may lose precision.
+- **Not thread-safe** during `limit()`/`resolve()`/`@safe` calls (the `math` module is temporarily patched).
+- **Integer-dimension limitation.** The composite number system uses integer dimensions. Functions whose growth rate sits between polynomial orders (like `log(x)`, which grows slower than `x^ε` for any ε > 0) can't be faithfully represented. Limits involving log/polynomial rate comparisons may fall to numerical extrapolation or raise `LimitUndecidableError`.
+- **Double-precision overflow.** Numerical fallback probes are plain Python floats. Functions like `factorial(n)` overflow at n > 170; `exp(x)` at x > 709. Limits requiring probe values beyond these ranges may be undecidable.
+- **Unsupported functions** (`jax`, `torch`, Bessel, Ei, Lambert W, etc.) raise `UnsupportedFunctionError` or `NameError` — not silent wrong answers.
 
 ## License
 
