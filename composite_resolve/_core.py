@@ -36,9 +36,10 @@ class Composite:
     Dimension +1 = infinity (first order)
     """
 
-    __slots__ = ['_d']
+    __slots__ = ['_d', '_expressed_zero']
 
     def __init__(self, data=None):
+        self._expressed_zero = False
         if data is None:
             self._d = {}
         elif isinstance(data, dict):
@@ -127,6 +128,10 @@ class Composite:
 
     def __add__(self, other):
         if isinstance(other, (int, float)):
+            if other == 0:
+                if 0 not in self._d and self._d:
+                    return self + Composite({-1: 1.0})
+                return self
             other = Composite(other)
         result = dict(self._d)
         for d, c in other._d.items():
@@ -138,22 +143,31 @@ class Composite:
 
     def __sub__(self, other):
         if isinstance(other, (int, float)):
+            if other == 0:
+                if 0 not in self._d and self._d:
+                    return self - Composite({-1: 1.0})
+                return self
             other = Composite(other)
         result = dict(self._d)
         for d, c in other._d.items():
             result[d] = result.get(d, 0.0) - c
-        # Check for exact cancellation of zero-valued composites
+        # Check for exact cancellation
         vals = [v for v in result.values() if v != 0]
-        if not vals and self.st() == 0 and (isinstance(other, Composite) and other.st() == 0):
-            # Both zero-valued, exact cancel → shift to higher zero power
-            all_dims = list(self._d.keys()) + list(other._d.keys())
-            if all_dims:
-                min_dim = min(all_dims)
-                power = max(2, 1 - min_dim)
-                z = Composite({-1: 1.0})
-                for _ in range(power - 1):
-                    z = z * Composite({-1: 1.0})
-                return z
+        if not vals:
+            has_real_content = any(d >= 0 for d in self._d) or any(d >= 0 for d in other._d)
+            if has_real_content:
+                r = Composite({})
+                r._expressed_zero = True
+                return r
+            else:
+                all_dims = list(self._d.keys()) + list(other._d.keys())
+                if all_dims:
+                    min_dim = min(all_dims)
+                    power = max(2, 1 - min_dim)
+                    z = Composite({-1: 1.0})
+                    for _ in range(power - 1):
+                        z = z * Composite({-1: 1.0})
+                    return z
         return Composite(result)
 
     def __rsub__(self, other):
@@ -176,12 +190,15 @@ class Composite:
         """
         if isinstance(other, (int, float)):
             if other == 0:
-                return Composite({})
+                return self * Composite({-1: 1.0})
             return Composite({d: c * other for d, c in self._d.items()})
         if isinstance(other, Composite):
+            _ZERO_D = {-1: 1.0}
+            self_d = _ZERO_D if self._expressed_zero else self._d
+            other_d = _ZERO_D if other._expressed_zero else other._d
             result = {}
-            for d1, c1 in self._d.items():
-                for d2, c2 in other._d.items():
+            for d1, c1 in self_d.items():
+                for d2, c2 in other_d.items():
                     d = d1 + d2
                     result[d] = result.get(d, 0.0) + c1 * c2
             for d, c in result.items():
@@ -198,7 +215,7 @@ class Composite:
     def __truediv__(self, other):
         if isinstance(other, (int, float)):
             if other == 0:
-                raise ZeroDivisionError("Cannot divide by Python zero.")
+                return self.__truediv__(Composite({-1: 1.0}))
             return Composite({d: c / other for d, c in self._d.items()})
         if isinstance(other, Composite):
             if not other._d:
@@ -554,7 +571,13 @@ def sin(x, terms=12):
     sin_a, cos_a = math.sin(a), math.cos(a)
     sin_h, cos_h = _sincos_h_series(h, terms)
     # sin(a + h) = sin(a)·cos(h) + cos(a)·sin(h)
-    return sin_a * cos_h + cos_a * sin_h
+    # Skip zero-coefficient terms to avoid scalar-0 uplift in __mul__
+    result = Composite({})
+    if sin_a != 0:
+        result = result + sin_a * cos_h
+    if cos_a != 0:
+        result = result + cos_a * sin_h
+    return result
 
 
 def cos(x, terms=12):
@@ -571,8 +594,14 @@ def cos(x, terms=12):
         return R(math.cos(a))
     sin_a, cos_a = math.sin(a), math.cos(a)
     sin_h, cos_h = _sincos_h_series(h, terms)
-    # cos(a + h) = cos(a)·cos(h) − sin(a)·sin(h)
-    return cos_a * cos_h - sin_a * sin_h
+    # cos(a + h) = cos(a)·cos(h) - sin(a)·sin(h)
+    # Skip zero-coefficient terms to avoid scalar-0 uplift in __mul__
+    result = Composite({})
+    if cos_a != 0:
+        result = result + cos_a * cos_h
+    if sin_a != 0:
+        result = result - sin_a * sin_h
+    return result
 
 
 def exp(x, terms=15):
@@ -1139,11 +1168,16 @@ def cosm1(x, terms=12):
             sign = (-1) ** (n // 2)
             cosm1_h = cosm1_h + (term if sign > 0 else -term)
 
-    # cosm1(a+h) = (cos(a)−1) + cos(a)·cosm1_h − sin(a)·sin_h
+    # cosm1(a+h) = (cos(a)-1) + cos(a)·cosm1_h - sin(a)·sin_h
+    # Skip zero-coefficient terms to avoid scalar-0 uplift in __mul__
     base_cosm1 = -2.0 * math.sin(a / 2.0) ** 2
     cos_a = math.cos(a)
     sin_a = math.sin(a)
-    result = cos_a * cosm1_h - sin_a * sin_h
+    result = Composite({})
+    if cos_a != 0:
+        result = result + cos_a * cosm1_h
+    if sin_a != 0:
+        result = result - sin_a * sin_h
     if base_cosm1 != 0:
         result = result + Composite({0: base_cosm1})
     return result
@@ -1309,7 +1343,8 @@ def atan(x, terms=15):
         else:
             cn = deriv_tower.coeff(-(n-1))  # f^(n-1)(a)/(n-1)!
             cn = cn / n  # atan^(n)(a)/n!
-        result = result + cn * h_power
+        if cn != 0:
+            result = result + cn * h_power
     return result
 
 
@@ -1340,7 +1375,8 @@ def asin(x, terms=15):
             cn = 1.0 / math.sqrt(1 - a*a)
         else:
             cn = deriv_tower.coeff(-(n-1)) / n
-        result = result + cn * h_power
+        if cn != 0:
+            result = result + cn * h_power
     return result
 
 

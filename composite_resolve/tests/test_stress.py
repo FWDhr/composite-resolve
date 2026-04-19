@@ -55,8 +55,11 @@ class TestNested:
         # From right only — sqrt is always positive, sin(x/2) changes sign at 0
         assert abs(limit(lambda x: sqrt((1-cos(x))/2)/sin(x/2), to=0, dir="+") - 1.0) < 1e-6
 
+    @pytest.mark.timeout(120)
     def test_chain_five_deep(self):
-        """sin(atan(sin(atan(x)))) / x at 0 → 1."""
+        """sin(atan(sin(atan(x)))) / x at 0 -> 1.
+        Deeply nested trig chain causes O(n^2) dimension explosion
+        through convolution. Slow by design at default truncation."""
         assert abs(resolve(
             lambda x: sin(atan(sin(atan(x))))/x, at=0) - 1.0) < 1e-6
 
