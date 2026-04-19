@@ -247,6 +247,35 @@ composite-resolve distinguishes three failure modes:
 
 `LimitUndecidableError` is NOT a subclass of `LimitDoesNotExistError`. They represent fundamentally different situations: evidence of non-existence vs. insufficient machinery.
 
+## Performance
+
+### Dimension truncation
+
+Deeply nested function chains (like `sin(atan(sin(atan(x))))`) cause dimension counts to grow quadratically through convolution. `MAX_ACTIVE_DIMS` (default 60) caps the number of active dimensions after each multiplication, keeping the closest to dim 0. Accuracy loss is negligible (~1/60! = 10^-82) because discarded tails carry factorially tiny coefficients.
+
+```python
+import composite_resolve._core as core
+core.MAX_ACTIVE_DIMS = 100  # raise for higher-order derivatives
+```
+
+### NumPy acceleration (optional)
+
+When numpy is installed, large convolutions automatically use C-speed `np.convolve` instead of Python dict loops. For very large composites (128+ combined segment size), FFT-based convolution via `np.fft` provides O(N log N) scaling. NumPy is optional - without it, everything works identically via pure Python.
+
+Three-tier dispatch (automatic, no configuration needed):
+
+| Composite size | Method | Typical speedup |
+|---|---|---|
+| < 25 dims | Python dict loop | baseline |
+| 25-127 dims | `np.convolve` (direct) | 2-5x |
+| 128+ dims | `np.fft` (FFT) | 10-50x |
+
+The internal representation stays as a sparse dict. NumPy arrays are transient - created for the convolution segment, discarded after. No storage overhead when numpy is not used.
+
+```bash
+pip install numpy  # optional, for acceleration
+```
+
 ## Limitations
 
 - **Single-variable functions only.** Multi-variable limits are out of scope.

@@ -22,6 +22,70 @@ from composite_resolve._errors import CompositionError
 # 1/n! and contribute negligibly within float precision.
 MAX_ACTIVE_DIMS = 60
 
+# Optional numpy acceleration for convolution.
+try:
+    import numpy as _np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
+_NUMPY_THRESHOLD = 25
+_FFT_THRESHOLD = 128
+_CLUSTER_GAP = 5
+
+
+def _fft_convolve(a, b):
+    n = len(a) + len(b) - 1
+    return _np.fft.irfft(_np.fft.rfft(a, n) * _np.fft.rfft(b, n), n)
+
+
+def _dict_to_sparse(d):
+    dims = sorted(d.keys())
+    return _np.array(dims, dtype=_np.int64), _np.array([d[k] for k in dims])
+
+
+def _find_clusters(indices):
+    if len(indices) == 0:
+        return []
+    clusters = []
+    start = 0
+    for i in range(1, len(indices)):
+        if indices[i] - indices[i - 1] > _CLUSTER_GAP:
+            clusters.append((start, i))
+            start = i
+    clusters.append((start, len(indices)))
+    return clusters
+
+
+def _cluster_to_dense(indices, values, start_idx, end_idx):
+    cl_idx = indices[start_idx:end_idx]
+    cl_val = values[start_idx:end_idx]
+    min_d, max_d = int(cl_idx[0]), int(cl_idx[-1])
+    dense = _np.zeros(max_d - min_d + 1)
+    for i in range(len(cl_idx)):
+        dense[int(cl_idx[i]) - min_d] = cl_val[i]
+    return dense, min_d
+
+
+def _convolve_sparse(d_a, d_b):
+    idx_a, val_a = _dict_to_sparse(d_a)
+    idx_b, val_b = _dict_to_sparse(d_b)
+    clusters_a = _find_clusters(idx_a)
+    clusters_b = _find_clusters(idx_b)
+    result = {}
+    for sa, ea in clusters_a:
+        da, oa = _cluster_to_dense(idx_a, val_a, sa, ea)
+        for sb, eb in clusters_b:
+            db, ob = _cluster_to_dense(idx_b, val_b, sb, eb)
+            conv = _fft_convolve(da, db) if len(da) + len(db) > _FFT_THRESHOLD else _np.convolve(da, db)
+            off = oa + ob
+            for i in range(len(conv)):
+                c = conv[i]
+                if abs(c) > 1e-15:
+                    dim = off + i
+                    result[dim] = result.get(dim, 0.0) + float(c)
+    return result
+
 
 def _truncate(d):
     if len(d) <= MAX_ACTIVE_DIMS:
@@ -219,15 +283,20 @@ class Composite:
             _ZERO_D = {-1: 1.0}
             self_d = _ZERO_D if self._expressed_zero else self._d
             other_d = _ZERO_D if other._expressed_zero else other._d
-            result = {}
-            for d1, c1 in self_d.items():
-                for d2, c2 in other_d.items():
-                    d = d1 + d2
-                    result[d] = result.get(d, 0.0) + c1 * c2
+            if (_HAS_NUMPY
+                    and len(self_d) > _NUMPY_THRESHOLD
+                    and len(other_d) > _NUMPY_THRESHOLD):
+                result = _convolve_sparse(self_d, other_d)
+            else:
+                result = {}
+                for d1, c1 in self_d.items():
+                    for d2, c2 in other_d.items():
+                        d = d1 + d2
+                        result[d] = result.get(d, 0.0) + c1 * c2
             for d, c in result.items():
                 if not math.isfinite(c) and d <= 0:
                     raise CompositionError(
-                        "0·∞ indeterminate: lossy-infinity coefficient "
+                        "0*inf indeterminate: lossy-infinity coefficient "
                         "cancelled into a finite/infinitesimal dimension")
             return Composite(_truncate(result))
         return NotImplemented
