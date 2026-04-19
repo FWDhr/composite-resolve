@@ -15,6 +15,29 @@ import math
 
 from composite_resolve._errors import CompositionError
 
+# Maximum number of active (non-zero) dimensions kept after convolution
+# and polynomial long division. Prevents O(n^2) dimension explosion in
+# deeply nested function chains. Keeps dims closest to 0 (most significant
+# for limits and derivatives). Discarded tails have coefficients of order
+# 1/n! and contribute negligibly within float precision.
+MAX_ACTIVE_DIMS = 60
+
+
+def _truncate(d):
+    if len(d) <= MAX_ACTIVE_DIMS:
+        return d
+    sorted_dims = sorted(d.keys(), key=lambda x: abs(x))
+    keep = set(sorted_dims[:MAX_ACTIVE_DIMS])
+    # Always preserve nonfinite coefficients (lossy-infinity markers).
+    # These are signals that the algebraic path produced an indeterminate
+    # result. Discarding them would mask the error and return a wrong
+    # answer instead of triggering the fallback/recovery path.
+    for dim, c in d.items():
+        if not math.isfinite(c):
+            keep.add(dim)
+    return {dim: c for dim, c in d.items() if dim in keep}
+
+
 # =============================================================================
 # EXCEPTIONS
 # =============================================================================
@@ -206,7 +229,7 @@ class Composite:
                     raise CompositionError(
                         "0·∞ indeterminate: lossy-infinity coefficient "
                         "cancelled into a finite/infinitesimal dimension")
-            return Composite(result)
+            return Composite(_truncate(result))
         return NotImplemented
 
     def __rmul__(self, other):
@@ -465,7 +488,7 @@ def _deconvolve(a, b):
         # Clean near-zeros
         remainder = {d: c for d, c in remainder.items() if abs(c) > 1e-50}
 
-    return Composite(result)
+    return Composite(_truncate(result))
 
 
 # =============================================================================
