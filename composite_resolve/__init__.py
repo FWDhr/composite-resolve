@@ -34,6 +34,7 @@ from composite_resolve._errors import (
     UnsupportedFunctionError,
 )
 from composite_resolve._classify import Regular, Removable, Pole, Essential
+from composite_resolve._verify import verify
 
 __version__ = "0.1.0"
 __all__ = [
@@ -44,4 +45,5 @@ __all__ = [
     "LimitDivergesError", "SingularityError", "CompositionError",
     "UnsupportedFunctionError",
     "Regular", "Removable", "Pole", "Essential",
+    "verify",
 ]

@@ -144,6 +144,16 @@ Returns `Regular`, `Removable`, `Pole`, or `Essential`.
 
 Residue at a pole.
 
+### `verify(f, var_range, points=1000) -> VerifyReport`
+
+Scan a function's domain for singularities and verify boundary behavior. Returns a `VerifyReport` with detected singularities, their classifications, correct limit values, and whether the function handles them. Use `assert report` or `assert not report.unhandled` in tests for CI gating.
+
+```python
+report = verify(f, var_range=(0, 1))
+report = verify(f, var_ranges={"x": (0,1), "y": (0,1)}, scan="x", fixed={"y": 0.5})
+report = verify(f, var_ranges={"x": (0,1), "y": (0,1)}, scan="all")
+```
+
 ## Supported Math Functions
 
 `composite_resolve.math` provides composite-aware versions of 42 functions. These accept both plain floats and Composite objects - use them in functions passed to `limit()`/`resolve()` for guaranteed composite propagation, or use `math.*` / `numpy.*` which are patched automatically during evaluation.
@@ -209,6 +219,89 @@ limit(lambda x: floor(x), to=2, dir="+")   # → 2
 limit(lambda x: floor(x), to=2, dir="-")   # → 1
 limit(lambda x: ceiling(x), to=2, dir="+") # → 3
 ```
+
+## Boundary Verification
+
+`verify()` scans a function's domain, finds where it breaks (raises, NaN, inf, discontinuities), classifies each singularity, computes the correct limit value, and reports whether the function already handles it. Use it during development to find boundary bugs, or in CI to prevent regressions.
+
+```python
+import math
+from composite_resolve import verify
+
+report = verify(lambda x: math.sin(x) / x, var_range=(-10, 10))
+print(report)
+```
+
+```
+verify(<lambda>) over (-10, 10)
+  1019 points sampled in 0.002s
+  1 singularity(ies) found
+    x=0.0 dir=both: Removable [UNHANDLED] value=1
+          function raises_ZeroDivisionError
+          fix: wrap with @safe or return 1.0 at x=0.0
+  FAIL: 1 unhandled singularity(ies)
+```
+
+After fixing the function (e.g. with `@safe`), the report passes:
+
+```python
+from composite_resolve import safe
+
+@safe
+def sinc(x):
+    return math.sin(x) / x
+
+report = verify(sinc, var_range=(-10, 10))
+assert report  # PASS
+```
+
+### CI integration
+
+```python
+# tests/test_boundaries.py
+import math
+import pytest
+from composite_resolve import verify
+
+FUNCTIONS = [
+    ("sinc",      lambda x: math.sin(x)/x,       (-10, 10)),
+    ("entropy",   lambda p: -p * math.log(p),     (0, 1)),
+    ("log_ratio", lambda x: math.log(1+x)/x,     (-0.5, 10)),
+    ("exp_decay", lambda x: (math.exp(x)-1)/x,   (-5, 5)),
+]
+
+@pytest.mark.parametrize("name,fn,domain", FUNCTIONS)
+def test_boundary(name, fn, domain):
+    report = verify(fn, var_range=domain)
+    assert not report.unhandled, f"{name}:\n{report}"
+```
+
+### Multi-variable functions
+
+Scan one variable at a time with others held fixed:
+
+```python
+report = verify(
+    lambda x, y: (x**2 - y**2) / (x - y),
+    var_ranges={"x": (-5, 5), "y": (-5, 5)},
+    scan="x",
+    fixed={"y": 1.0},
+)
+# Finds removable singularity at x=1 with correct value 2.0
+```
+
+Or scan all variables one at a time (others at midpoint):
+
+```python
+report = verify(f, var_ranges={"x": (-5, 5), "y": (-5, 5)}, scan="all")
+```
+
+### What verify does NOT do
+
+- Does not fix the function. Only reports.
+- Does not check numerical stability away from singularities.
+- Does not handle symbolic expressions, only plain Python callables.
+- Does not prove absence of singularities, only checks sampled points.
 
 ## Math Library Support
 

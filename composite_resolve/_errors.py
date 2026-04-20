@@ -75,7 +75,7 @@ class UnsupportedFunctionError(CompositeResolveError):
     can decide whether to extend the dispatch table or route around the call.
     """
 
-    def __init__(self, function: str, message: str | None = None):
+    def __init__(self, function, message=None):
         self.function = function
         if message is None:
             message = (
