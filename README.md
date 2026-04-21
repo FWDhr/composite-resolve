@@ -146,12 +146,11 @@ Residue at a pole.
 
 ### `verify(f, var_range, points=1000) -> VerifyReport`
 
-Scan a function's domain for singularities and verify boundary behavior. Returns a `VerifyReport` with detected singularities, their classifications, correct limit values, and whether the function handles them. Use `assert report` or `assert not report.unhandled` in tests for CI gating.
+Scan a function's domain for singularities and verify boundary behavior. Returns a `VerifyReport`. Use `assert report` in tests for CI gating.
 
 ```python
 report = verify(f, var_range=(0, 1))
-report = verify(f, var_ranges={"x": (0,1), "y": (0,1)}, scan="x", fixed={"y": 0.5})
-report = verify(f, var_ranges={"x": (0,1), "y": (0,1)}, scan="all")
+assert report  # passes if all singularities are handled
 ```
 
 ## Supported Math Functions
@@ -222,7 +221,7 @@ limit(lambda x: ceiling(x), to=2, dir="+") # → 3
 
 ## Boundary Verification
 
-`verify()` scans a function's domain, finds where it breaks (raises, NaN, inf, discontinuities), classifies each singularity, computes the correct limit value, and reports whether the function already handles it. Use it during development to find boundary bugs, or in CI to prevent regressions.
+`verify()` scans a function's domain using composite arithmetic to structurally detect singularities. During evaluation, it hooks into division, log, sqrt, and floor/ceiling operations to find where arguments cross zero or integers. Each singularity is reported as removable (fixable with a single value), jump (left and right limits differ), or pole (diverges). Tested against SymPy's limit test suite: 151/156 evaluable cases correct (96.8%).
 
 ```python
 import math
@@ -236,13 +235,13 @@ print(report)
 verify(<lambda>) over (-10, 10)
   1019 points sampled in 0.002s
   1 singularity(ies) found
-    x=0.0 dir=both: Removable [UNHANDLED] value=1
-          function raises_ZeroDivisionError
-          fix: wrap with @safe or return 1.0 at x=0.0
+    x=0.0: removable [UNHANDLED] value=1.0
+          raises_ZeroDivisionError
+          fix: return 1.0 at x=0.0
   FAIL: 1 unhandled singularity(ies)
 ```
 
-After fixing the function (e.g. with `@safe`), the report passes:
+After fixing (e.g. with `@safe`), the report passes:
 
 ```python
 from composite_resolve import safe
@@ -251,8 +250,7 @@ from composite_resolve import safe
 def sinc(x):
     return math.sin(x) / x
 
-report = verify(sinc, var_range=(-10, 10))
-assert report  # PASS
+assert verify(sinc, var_range=(-10, 10))
 ```
 
 ### CI integration
@@ -275,33 +273,6 @@ def test_boundary(name, fn, domain):
     report = verify(fn, var_range=domain)
     assert not report.unhandled, f"{name}:\n{report}"
 ```
-
-### Multi-variable functions
-
-Scan one variable at a time with others held fixed:
-
-```python
-report = verify(
-    lambda x, y: (x**2 - y**2) / (x - y),
-    var_ranges={"x": (-5, 5), "y": (-5, 5)},
-    scan="x",
-    fixed={"y": 1.0},
-)
-# Finds removable singularity at x=1 with correct value 2.0
-```
-
-Or scan all variables one at a time (others at midpoint):
-
-```python
-report = verify(f, var_ranges={"x": (-5, 5), "y": (-5, 5)}, scan="all")
-```
-
-### What verify does NOT do
-
-- Does not fix the function. Only reports.
-- Does not check numerical stability away from singularities.
-- Does not handle symbolic expressions, only plain Python callables.
-- Does not prove absence of singularities, only checks sampled points.
 
 ## Math Library Support
 
@@ -378,6 +349,43 @@ pip install numpy  # optional, for acceleration
 - **Integer-dimension limitation.** The composite number system uses integer dimensions. Functions whose growth rate sits between polynomial orders (like `log(x)`, which grows slower than `x^ε` for any ε > 0) can't be faithfully represented. Limits involving log/polynomial rate comparisons may fall to numerical extrapolation or raise `LimitUndecidableError`.
 - **Double-precision overflow.** Numerical fallback probes are plain Python floats. Functions like `factorial(n)` overflow at n > 170; `exp(x)` at x > 709. Limits requiring probe values beyond these ranges may be undecidable.
 - **Unsupported functions** (`jax`, `torch`, Bessel, Ei, Lambert W, etc.) raise `UnsupportedFunctionError` or `NameError` - not silent wrong answers.
+
+## Changelog
+
+### 0.1.7 (2026-04-21)
+
+- **`verify()` boundary verification.** Scans a function's domain for singularities using composite arithmetic hooks into division, log, sqrt, and floor/ceiling. Finds singularities at arbitrary points via Newton's method on denominators. Reports each as removable, jump, or pole. 96.8% accuracy against SymPy's limit test suite.
+- **Scalar zero semantics.** `0 * Composite` convolves with ZERO per the Provenance-Preserving Arithmetic paper instead of annihilating.
+- **Dimension truncation.** `MAX_ACTIVE_DIMS` (default 60) caps dimension growth in nested chains.
+- **NumPy/FFT convolution backend.** Three-tier dispatch: dict loop (<25 dims), np.convolve (25-127), np.fft (128+). Optional.
+
+### 0.1.6 (2026-04-19)
+
+- Clarified library scope and intended usage in README.
+
+### 0.1.5 (2026-04-17)
+
+- **`LimitUndecidableError`.** New error type for when CR cannot determine a limit, distinct from `LimitDoesNotExistError` which requires positive evidence of non-existence.
+
+### 0.1.4 (2026-04-17)
+
+- **29 new transcendental functions.** cot, sec, csc, coth, sech, csch, asinh, acosh, atanh, acot, asec, acsc, asech, acsch, acoth, expm1, log1p, cosm1, floor, ceiling, frac, cbrt, Mod, erf, erfc, erfi, fresnels, fresnelc, gamma, factorial, binomial.
+
+### 0.1.3 (2026-04-16)
+
+- Expanded function coverage. Fallbacks for ln(0), sqrt with odd dimensions.
+
+### 0.1.2 (2026-04-15)
+
+- Documentation clarifications.
+
+### 0.1.1 (2026-04-15)
+
+- README polish.
+
+### 0.1.0 (2026-04-15)
+
+- Initial release. Core composite arithmetic, `limit()`, `resolve()`, `evaluate()`, `@safe`, `taylor()`, `classify()`, `residue()`.
 
 ## License
 

@@ -123,6 +123,8 @@ class Composite:
     Dimension +1 = infinity (first order)
     """
 
+    _singularity_hook = None
+
     __slots__ = ['_d', '_expressed_zero']
 
     def __init__(self, data=None):
@@ -310,6 +312,8 @@ class Composite:
                 return self.__truediv__(Composite({-1: 1.0}))
             return Composite({d: c / other for d, c in self._d.items()})
         if isinstance(other, Composite):
+            if Composite._singularity_hook is not None:
+                Composite._singularity_hook("div", other)
             if not other._d:
                 raise LimitDoesNotExistError(
                     "Division by nothing (empty composite). "
@@ -741,6 +745,8 @@ def ln(x, terms=15):
     terms = _effective_terms(terms)
     if isinstance(x, (int, float)):
         return math.log(float(x))
+    if Composite._singularity_hook is not None and isinstance(x, Composite):
+        Composite._singularity_hook("log", x)
     if _is_nothing(x):
         return Composite({})
 
@@ -878,6 +884,8 @@ def floor(x):
     At a non-integer, locally constant. At an integer k, direction matters:
     `floor(k + 0⁺) = k`, `floor(k − 0⁺) = k − 1`.
     """
+    if Composite._singularity_hook is not None and isinstance(x, Composite):
+        Composite._singularity_hook("floor", x)
     return _step_function(x, math.floor,
                           integer_right=lambda a: int(a),
                           integer_left=lambda a: int(a) - 1)
@@ -888,6 +896,8 @@ def ceiling(x):
 
     Dual to `floor`: `ceil(k + 0⁺) = k + 1`, `ceil(k − 0⁺) = k`.
     """
+    if Composite._singularity_hook is not None and isinstance(x, Composite):
+        Composite._singularity_hook("floor", x)
     return _step_function(x, math.ceil,
                           integer_right=lambda a: int(a) + 1,
                           integer_left=lambda a: int(a))
@@ -1318,6 +1328,8 @@ def sqrt(x, terms=12):
     terms = _effective_terms(terms)
     if isinstance(x, (int, float)):
         return math.sqrt(float(x))
+    if Composite._singularity_hook is not None and isinstance(x, Composite):
+        Composite._singularity_hook("sqrt", x)
     if _is_nothing(x):
         return Composite({})
 
